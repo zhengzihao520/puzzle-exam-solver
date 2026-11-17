@@ -1,0 +1,92 @@
+{
+  "dog": {
+    "expected": 40,
+    "got": 40,
+    "needs_finetune": false,
+    "coco": "dog"
+  },
+  "cat": {
+    "expected": 40,
+    "got": 40,
+    "needs_finetune": false,
+    "coco": "cat"
+  },
+  "elephant": {
+    "expected": 40,
+    "got": 40,
+    "needs_finetune": false,
+    "coco": "elephant"
+  },
+  "desktop": {
+    "expected": 40,
+    "got": 40,
+    "needs_finetune": false,
+    "coco": "tv"
+  },
+  "bicycle": {
+    "expected": 20,
+    "got": 20,
+    "needs_finetune": false,
+    "coco": "bicycle"
+  },
+  "car": {
+    "expected": 20,
+    "got": 20,
+    "needs_finetune": false,
+    "coco": "car"
+  },
+  "chair": {
+    "expected": 20,
+    "got": 20,
+    "needs_finetune": false,
+    "coco": "chair"
+  },
+  "cup": {
+    "expected": 20,
+    "got": 20,
+    "needs_finetune": false,
+    "coco": "cup"
+  },
+  "airplane": {
+    "expected": 20,
+    "got": 20,
+    "needs_finetune": false,
+    "coco": "airplane"
+  },
+  "backpack": {
+    "expected": 20,
+    "got": 20,
+    "needs_finetune": false,
+    "coco": "backpack"
+  },
+  "umbrella": {
+    "expected": 20,
+    "got": 20,
+    "needs_finetune": false,
+    "coco": "umbrella"
+  },
+  "suitcase": {
+    "expected": 20,
+    "got": 20,
+    "needs_finetune": false,
+    "coco": "suitcase"
+  },
+  "penguin": {
+    "expected": 39,
+    "got": 39,
+    "needs_finetune": true,
+    "coco": null
+  },
+  "tafei": {
+    "expected": 13,
+    "got": 13,
+    "needs_finetune": true,
+    "coco": null
+  },
+  "nailong": {
+    "expected": 16,
+    "got": 16,
+    "needs_finetune": true,
+    "coco": null
+  }
+}
