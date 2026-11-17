@@ -151,6 +151,35 @@ def find_board(img: np.ndarray) -> Rect | None:
     return Rect(*best[:4]) if best else None
 
 
+def find_board_border(img: np.ndarray, reference: Rect | None = None) -> Rect | None:
+    """棋盘兜底检测：用**边框**而不是内部平坦性。
+
+    居中开局时拼块铺在棋盘上，棋盘内部不再是平坦区（实测 `center_5x5.png` 平坦区法失败）。
+    但棋盘四周始终有一圈比页面更亮的描边矩形，且**参考面板与棋盘等高**（三张实测图都成立：
+    参考面板高 338，棋盘高 387/519），因此用 Canny + 近似矩形 + 高度对齐即可兜底。
+    """
+    grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(cv2.GaussianBlur(grey, (5, 5), 0), 40, 120)
+    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8))
+    h, w = grey.shape[:2]
+    best = None
+    cnts, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    for c in cnts:
+        peri = cv2.arcLength(c, True)
+        if peri < 200:
+            continue
+        ap = cv2.approxPolyDP(c, 0.02 * peri, True)
+        x, y, ww, hh = cv2.boundingRect(ap)
+        area = ww * hh
+        if not (0.04 * w * h <= area <= 0.45 * w * h):
+            continue
+        if not (0.8 <= ww / max(1, hh) <= 1.7):
+            continue
+        if reference is not None and abs(hh - reference.h) > 0.22 * reference.h:
+            continue
+        if best is None or area > best[0]:
+            best = (area, x, y, ww, hh)
+    return Rect(*best[1:]) if best else None
 def find_reference(img: np.ndarray, board: Rect, grid: int) -> Rect | None:
     """右侧参考面板 = 棋盘右边最大的**明亮**连通域（缩略图是 4:3 照片，整体也是 4:3）。
 
@@ -371,6 +400,8 @@ class Solver:
     # -- 规划 --
     def plan(self, img: np.ndarray) -> Plan:
         board = find_board(img)
+        if board is None:
+            board = find_board_border(img)          # 居中开局时棋盘内部被块盖住
         if board is None:
             raise RuntimeError("找不到棋盘：请确认游戏页面在最前且已开始某一 Part")
         reference = find_reference(img, board, self.grid)
