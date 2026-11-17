@@ -1,0 +1,13 @@
+[
+  {
+    "run": "cls",
+    "pretrained": true,
+    "epochs": 40,
+    "seconds": 618.1,
+    "val": {
+      "top1": 0.9599999785423279,
+      "top5": 1.0
+    },
+    "weights": "F:\\exam_next\\runs\\cls\\weights\\best.pt"
+  }
+]

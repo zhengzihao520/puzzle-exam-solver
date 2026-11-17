@@ -127,60 +127,61 @@ def _components(mask: np.ndarray, min_area: int) -> list[tuple[int, int, int, in
 
 
 def find_board(img: np.ndarray) -> Rect | None:
-    """棋盘 = 页面里最大的深色圆角矩形（#0f172a 系），宽高比接近方格比例。"""
-    grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    dark = ((grey > 8) & (grey < 60)).astype(np.uint8)
-    dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
-    best = None
-    for (x, y, w, h, area) in _components(dark, 40000):
-        if w < 200 or h < 150:
-            continue
-        ratio = w / h
-        if not (0.7 <= ratio <= 4.0):
-            continue
-        if best is None or area > best[4]:
-            best = (x, y, w, h, area)
-    return Rect(*best[:4]) if best else None
+    """棋盘 = 页面里最大的**平坦**深色矩形（棋盘内部几乎无纹理，四周被控件/拼块包围）。
 
-
-def find_stage(img: np.ndarray, board: Rect) -> Rect:
-    """拼图画布：棋盘所在的整块深色舞台区域（托盘在棋盘左右两侧）。"""
+    实测（1920×1080 实机截图）：棋盘内部是均匀深色，用“局部标准差 < 4”的平坦区
+    检测出来是 (453,477,525,387)，长宽比 1.36；页面背景虽然也平坦，但会触到图像边缘，
+    因此排除“贴边”的连通域即可把它排除。
+    """
     h, w = img.shape[:2]
-    grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    dark = (grey < 70).astype(np.uint8)
-    dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
-    for (x, y, ww, hh, area) in sorted(_components(dark, 60000), key=lambda t: -t[4]):
-        if (x <= board.x and y <= board.y + 4 and x + ww >= board.x + board.w - 4
-                and y + hh >= board.y + board.h - 4):
-            return Rect(x, y, ww, hh)
-    pad = int(min(w, h) * 0.03)
-    return Rect(max(0, board.x - 3 * pad), max(0, board.y - pad),
-                min(w - board.x + 3 * pad, board.w + 6 * pad), min(h - board.y + pad, board.h + 2 * pad))
-
-
-def find_reference(img: np.ndarray, board: Rect, grid: int) -> Rect | None:
-    """右侧参考面板：棋盘右边、宽度约为棋盘 0.6~1.4 倍、比舞台小的明亮网格区域。"""
-    h, w = img.shape[:2]
-    x0 = board.x + board.w + 20
-    if x0 >= w - 80:
-        return None
-    right = img[:, x0:]
-    grey = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(grey, 40, 120)
-    edges = cv2.dilate(edges, np.ones((5, 5), np.uint8))
+    grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    mean = cv2.boxFilter(grey, -1, (31, 31))
+    sq = cv2.boxFilter(grey * grey, -1, (31, 31))
+    std = np.sqrt(np.maximum(sq - mean * mean, 0))
+    flat = (std < 4).astype(np.uint8)
+    flat = cv2.morphologyEx(flat, cv2.MORPH_OPEN, np.ones((9, 9), np.uint8))
     best = None
-    for (x, y, ww, hh, area) in _components(edges, 20000):
-        if ww < board.w * 0.5 or hh < board.h * 0.5:
-            continue
-        if ww > board.w * 2.0 or hh > board.h * 2.0:
+    for (x, y, ww, hh, area) in _components(flat, int(0.03 * w * h)):
+        if x <= 2 or y <= 2 or x + ww >= w - 2 or y + hh >= h - 2:
+            continue                        # 触边 = 页面背景，不是棋盘
+        if not (0.6 <= ww / hh <= 1.6):
             continue
         if best is None or area > best[4]:
             best = (x, y, ww, hh, area)
-    if best is None:
-        return None
-    r = Rect(best[0] + x0, best[1], best[2], best[3])
-    # 参考面板按 grid×grid 切格，宽高比应接近 1（方格）或与棋盘一致
-    return r
+    return Rect(*best[:4]) if best else None
+
+
+def find_reference(img: np.ndarray, board: Rect, grid: int) -> Rect | None:
+    """右侧参考面板 = 棋盘右边最大的**明亮**连通域（缩略图是 4:3 照片，整体也是 4:3）。
+
+    实测：面板缩略图网格为 (1436,509,451,338)，比例 1.334 = 4:3，与 5×5 的 4:3 缩略图一致。
+    """
+    h, w = img.shape[:2]
+    grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    x_axis = np.arange(w)[None, :]
+    right = ((grey > 140) & (x_axis > board.x + board.w)).astype(np.uint8)
+    right = cv2.morphologyEx(right, cv2.MORPH_CLOSE, np.ones((25, 25), np.uint8))
+    best = None
+    for (x, y, ww, hh, area) in _components(right, int(0.02 * w * h)):
+        if ww < board.w * 0.4 or hh < board.h * 0.4:
+            continue
+        if not (0.9 <= ww / hh <= 1.9):
+            continue
+        if x + ww > w - 2 and y <= 2:
+            continue                        # 浏览器界面元素
+        if best is None or area > best[4]:
+            best = (x, y, ww, hh, area)
+    return Rect(*best[:4]) if best else None
+
+
+def find_stage(img: np.ndarray, board: Rect, reference: Rect | None) -> Rect:
+    """拼图画布：棋盘左右两侧的托盘区域（实测左右各约 0.9 个棋盘宽）。"""
+    h, w = img.shape[:2]
+    left = max(0, board.x - int(board.w * 1.05))
+    right = min(w, (reference.x if reference else board.x + board.w + int(board.w * 1.05)))
+    top = max(0, board.y - int(board.h * 0.42))
+    bottom = min(h, board.y + board.h + int(board.h * 0.42))
+    return Rect(left, top, right - left, bottom - top)
 
 
 def cell_rects(area: Rect, grid: int) -> list[Rect]:
@@ -372,9 +373,9 @@ class Solver:
         board = find_board(img)
         if board is None:
             raise RuntimeError("找不到棋盘：请确认游戏页面在最前且已开始某一 Part")
-        stage = find_stage(img, board)
-        plan = Plan(grid=self.grid, board=board, stage=stage,
-                    reference=find_reference(img, board, self.grid))
+        reference = find_reference(img, board, self.grid)
+        stage = find_stage(img, board, reference)
+        plan = Plan(grid=self.grid, board=board, stage=stage, reference=reference)
         plan.cells = cell_rects(board, self.grid)
         self.log(f"[plan] 棋盘 {board.box} 舞台 {stage.box} 参考面板 {plan.reference}")
 
