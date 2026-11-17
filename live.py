@@ -161,6 +161,22 @@ def main() -> int:
         filled = S.filled_cells(img, board, grid)
         for i in placed:
             filled[i] = True
+        # 双重确认：像素有内容 **且** 内容类别与参考格一致，才算"已填"。
+        # 否则是松散块（拖过去没吸附的），先拖回托盘，别让它骗停主循环。
+        for i, is_fill in enumerate(filled):
+            if not is_fill or i in placed:
+                continue
+            c = cells[i]
+            lab = clf.predict([img[c.y:c.y + c.h, c.x:c.x + c.w]])[0][0]
+            if lab == labels[i]:
+                continue
+            if snapped(mouse, S.grab(), c, cw, ch):
+                continue                      # 真吸附了，只是分类不同，保留
+            tx = stage.x + cw * 0.6
+            ty = stage.y + stage.h * 0.5
+            mouse.drag(c.cx, c.cy, tx, ty)
+            filled[i] = False
+            print(f"    清掉 cell{i} 的松散块（内容={lab} 与参考={labels[i]} 不符）", flush=True)
         anch = S.anchored_cells(filled, grid)
         todo = [i for i in range(grid * grid) if not filled[i] and i in anch and labels[i] != S.BLANK]
         if not todo:
