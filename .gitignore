@@ -1,0 +1,15 @@
+# 站点源码存档：仅用于研究规则，不随仓库发布
+recon/
+
+# 原始下载图库（数据集由 dataset/ 承载，避免重复提交）
+raw_assets/
+
+# 运行时产物
+logs/
+shots/
+*.mp4
+__pycache__/
+*.pyc
+
+# 训练中间产物（runs/ 里的 weights 与曲线要保留，这里只忽略缓存）
+runs/**/*.cache
