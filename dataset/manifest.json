@@ -1,0 +1,130 @@
+{
+  "seed": 20261117,
+  "val_fraction": 0.2,
+  "classes": {
+    "dog": {
+      "total": 40,
+      "train": 32,
+      "val": 8,
+      "from_site": 40,
+      "from_web": 0,
+      "needs_finetune": false
+    },
+    "cat": {
+      "total": 40,
+      "train": 32,
+      "val": 8,
+      "from_site": 40,
+      "from_web": 0,
+      "needs_finetune": false
+    },
+    "elephant": {
+      "total": 40,
+      "train": 32,
+      "val": 8,
+      "from_site": 40,
+      "from_web": 0,
+      "needs_finetune": false
+    },
+    "desktop": {
+      "total": 40,
+      "train": 32,
+      "val": 8,
+      "from_site": 40,
+      "from_web": 0,
+      "needs_finetune": false
+    },
+    "bicycle": {
+      "total": 20,
+      "train": 16,
+      "val": 4,
+      "from_site": 20,
+      "from_web": 0,
+      "needs_finetune": false
+    },
+    "car": {
+      "total": 20,
+      "train": 16,
+      "val": 4,
+      "from_site": 20,
+      "from_web": 0,
+      "needs_finetune": false
+    },
+    "chair": {
+      "total": 20,
+      "train": 16,
+      "val": 4,
+      "from_site": 20,
+      "from_web": 0,
+      "needs_finetune": false
+    },
+    "cup": {
+      "total": 20,
+      "train": 16,
+      "val": 4,
+      "from_site": 20,
+      "from_web": 0,
+      "needs_finetune": false
+    },
+    "airplane": {
+      "total": 20,
+      "train": 16,
+      "val": 4,
+      "from_site": 20,
+      "from_web": 0,
+      "needs_finetune": false
+    },
+    "backpack": {
+      "total": 20,
+      "train": 16,
+      "val": 4,
+      "from_site": 20,
+      "from_web": 0,
+      "needs_finetune": false
+    },
+    "umbrella": {
+      "total": 20,
+      "train": 16,
+      "val": 4,
+      "from_site": 20,
+      "from_web": 0,
+      "needs_finetune": false
+    },
+    "suitcase": {
+      "total": 20,
+      "train": 16,
+      "val": 4,
+      "from_site": 20,
+      "from_web": 0,
+      "needs_finetune": false
+    },
+    "penguin": {
+      "total": 159,
+      "train": 127,
+      "val": 32,
+      "from_site": 39,
+      "from_web": 120,
+      "needs_finetune": true
+    },
+    "tafei": {
+      "total": 133,
+      "train": 106,
+      "val": 27,
+      "from_site": 13,
+      "from_web": 120,
+      "needs_finetune": true
+    },
+    "nailong": {
+      "total": 136,
+      "train": 109,
+      "val": 27,
+      "from_site": 16,
+      "from_web": 120,
+      "needs_finetune": true
+    }
+  },
+  "totals": {
+    "train": 598,
+    "val": 150
+  }
+}
