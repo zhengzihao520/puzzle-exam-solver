@@ -321,6 +321,7 @@ class Plan:
     assignment: dict[int, int] = field(default_factory=dict)   # piece idx -> cell idx
     decoys: list[int] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    centered: bool = False      # 居中开局：块铺在棋盘上，像素填充检测不能当进度用
 
 
 def assign_by_class(pieces: list[Piece], cell_labels: list[str]) -> tuple[dict[int, int], list[int]]:
@@ -408,6 +409,10 @@ class Solver:
         stage = find_stage(img, board, reference)
         plan = Plan(grid=self.grid, board=board, stage=stage, reference=reference)
         plan.cells = cell_rects(board, self.grid)
+        filled0 = filled_cells(img, board, self.grid)
+        plan.centered = sum(filled0) >= len(filled0) - 2
+        if plan.centered:
+            plan.notes.append("检测到居中开局：块铺在棋盘上，进度改由自记账+吸附校验判断")
         self.log(f"[plan] 棋盘 {board.box} 舞台 {stage.box} 参考面板 {plan.reference}")
 
         # 参考格类别
@@ -523,6 +528,92 @@ class Solver:
             json.dumps({**result, "cell_labels": plan.cell_labels}, ensure_ascii=False, indent=2),
             encoding="utf-8")
         return result
+
+
+
+# ---------------------------------------------------------------- 探测式拾取
+
+
+def filled_cells(img: np.ndarray, board: Rect, grid: int,
+                 bg: tuple[int, int, int] | None = None) -> list[bool]:
+    """逐格判断“已填/空格”，代替识别顶栏的 `进度 N/25`。
+
+    已填的格子显示的是照片：内框中位色与棋盘底色差很大、或者纹理很强；
+    空格显示的是棋盘底色本身（几乎没有纹理）。这个结果同时给出 `hasAnchor()`
+    需要的“哪些邻居已落位”。
+    """
+    if bg is None:
+        bg = board_background(img, board)
+    bg_arr = np.array(bg, np.int16)
+    out: list[bool] = []
+    for cell in cell_rects(board, grid):
+        w, h = cell.w, cell.h
+        patch = img[cell.y + int(h * 0.2):cell.y + int(h * 0.8),
+                    cell.x + int(w * 0.2):cell.x + int(w * 0.8)]
+        if patch.size == 0:
+            out.append(False)
+            continue
+        grey = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        colour = np.median(patch.reshape(-1, 3), axis=0).astype(np.int16)
+        diff = int(np.abs(colour - bg_arr).max())
+        out.append(bool(grey.std() > 6.0 or diff > 34))
+    return out
+
+
+def anchored_cells(filled: list[bool], grid: int) -> set[int]:
+    """当前哪些空格可以吸附：外圈格，或至少有一个相邻格已落位（`hasAnchor`）。"""
+    ok: set[int] = set()
+    for i, is_filled in enumerate(filled):
+        if is_filled:
+            continue
+        r, c = divmod(i, grid)
+        if r in (0, grid - 1) or c in (0, grid - 1):
+            ok.add(i)
+            continue
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < grid and 0 <= nc < grid and filled[nr * grid + nc]:
+                ok.add(i)
+                break
+    return ok
+
+
+def tray_candidates(stage: Rect, board: Rect, reference: Rect | None,
+                    grid: int, centered: bool = False) -> list[tuple[float, float]]:
+    """托盘候选抓取点：棋盘左右两条带里按 0.55 格步长铺点。
+
+    拼块在托盘里紧贴甚至互相重叠（实测连通域会把 30 块并成一团），因此不试图“分割”，
+    而是把这个点当作“可能抓到某块”的入口，由 probe 判断真假。
+    """
+    cw, ch = board.w / grid, board.h / grid
+    step_x, step_y = max(24.0, cw * 0.55), max(20.0, ch * 0.55)
+    if centered:
+        # 居中开局：块铺在棋盘矩形内部（带抖动），候选抓取点必须落在棋盘里，
+        # 否则 side-band 里一个块都抓不到（实测 center_5x5 侧带内 0 块）。
+        pts_c: list[tuple[float, float]] = []
+        y = board.y + ch * 0.3
+        while y < board.y + board.h - ch * 0.2:
+            x = board.x + cw * 0.3
+            while x < board.x + board.w - cw * 0.2:
+                pts_c.append((round(x, 1), round(y, 1)))
+                x += step_x
+            y += step_y
+        return pts_c
+    right_limit = reference.x if reference else stage.x + stage.w
+    bands = [(stage.x + cw * 0.25, board.x - cw * 0.25),
+             (board.x + board.w + cw * 0.25, right_limit - cw * 0.25)]
+    pts: list[tuple[float, float]] = []
+    for x0, x1 in bands:
+        if x1 - x0 < cw * 0.3:
+            continue
+        y = stage.y + ch * 0.35
+        while y < stage.y + stage.h - ch * 0.2:
+            x = x0
+            while x < x1:
+                pts.append((round(x, 1), round(y, 1)))
+                x += step_x
+            y += step_y
+    return pts
 
 
 def main() -> int:
