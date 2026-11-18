@@ -1,10 +1,9 @@
-"""实机 v6：三级定位兜底 + 加密采样 + 同一块试遍同类格（v4 已验证的核心）。
+"""实机 v9：进度数字是唯一真值 + 全清盘 + 每格最多试 3 次。
 
-相对 v4 的改动：
-  * 棋盘定位三级兜底：平坦区 → 边框 → 上次成功坐标（写 logs/board_cache.json），
-    否则拼到一半棋盘被块盖住就再也接不上（v5 就是这样中止的）；
-  * 托盘采样从 0.55 格加密到 0.4 格，减少"块被压住 / 漏采"导致的类别缺失；
-  * 开跑前把棋盘上"非吸附"的松散块拖回托盘，避免 filled_cells 高估已填。
+三条硬规则（都是被实机证伪后改出来的）：
+  1. 成功与否只看顶栏 "进度 N/25" 有没有变化——我此前三次用画面推断都错了；
+  2. 开局若棋盘上有内容，一律拖回托盘（不再用抓取判断区分"吸附/松散"）；
+  3. 每个目标格最多试 3 次，然后换格；同类的块轮着试，避免死磕一格。
 """
 from __future__ import annotations
 
@@ -19,8 +18,9 @@ import numpy as np
 
 import solve as S
 
-NUDGES = [(0, 0), (6, 0), (-6, 0), (0, 6), (0, -6)]
+PROG = (1540, 225, 1790, 285)          # 顶栏 "进度: N/25"
 CACHE = Path(r"F:\exam_next\logs\board_cache.json")
+NUDGES = [(0, 0), (5, 0), (-5, 0)]
 
 
 def crop_at(img, x, y, w, h):
@@ -37,6 +37,11 @@ def diff(a, b) -> float:
     return float(np.abs(b.astype(np.int16) - a.astype(np.int16)).mean())
 
 
+def prog(img):
+    x0, y0, x1, y1 = PROG
+    return img[y0:y1, x0:x1].copy()
+
+
 def piece_like(img, x, y, cw, ch) -> bool:
     p = crop_at(img, x, y, cw * 0.7, ch * 0.7)
     if p is None:
@@ -46,7 +51,6 @@ def piece_like(img, x, y, cw, ch) -> bool:
 
 
 def locate(img, grid):
-    """三级兜底：平坦区 → 边框 → 缓存坐标。"""
     board = S.find_board(img)
     how = "flat"
     if board is None:
@@ -54,38 +58,20 @@ def locate(img, grid):
         how = "border"
     if board is None and CACHE.exists():
         d = json.loads(CACHE.read_text(encoding="utf-8"))
-        board = S.Rect(d["bx"], d["by"], d["bw"], d["bh"])
-        how = "cache"
+        board, how = S.Rect(d["bx"], d["by"], d["bw"], d["bh"]), "cache"
     if board is None:
         return None, None, None, "none"
     ref = S.find_reference(img, board, grid)
     if ref is None and CACHE.exists():
         d = json.loads(CACHE.read_text(encoding="utf-8"))
         if "rx" in d:
-            ref = S.Rect(d["rx"], d["ry"], d["rw"], d["rh"])
-            how += "+ref-cache"
-    if board is not None and ref is not None:
+            ref, how = S.Rect(d["rx"], d["ry"], d["rw"], d["rh"]), how + "+refcache"
+    if ref is not None:
         CACHE.parent.mkdir(exist_ok=True)
         CACHE.write_text(json.dumps({"bx": board.x, "by": board.y, "bw": board.w, "bh": board.h,
                                      "rx": ref.x, "ry": ref.y, "rw": ref.w, "rh": ref.h}),
                          encoding="utf-8")
-    return board, ref, S.find_stage(img, board, ref), how
-
-
-def snapped(mouse, img, cell, cw, ch) -> bool:
-    before = crop_at(img, cell.cx, cell.cy, cw, ch)
-    far_x = cell.cx + cw * 1.6 if cell.cx + cw * 2.4 < img.shape[1] else cell.cx - cw * 1.6
-    far_before = crop_at(img, far_x, cell.cy, cw * 0.8, ch * 0.8)
-    mouse.press(cell.cx, cell.cy)
-    mouse.glide(far_x, cell.cy)
-    time.sleep(0.1)
-    shot = S.grab()
-    mouse.glide(cell.cx, cell.cy)
-    mouse.release()
-    time.sleep(0.08)
-    left = diff(before, crop_at(shot, cell.cx, cell.cy, cw, ch)) > 18
-    appeared = diff(far_before, crop_at(shot, far_x, cell.cy, cw * 0.8, ch * 0.8)) > 18
-    return (not left) and (not appeared)
+    return board, ref, S.find_stage(img, board, ref) if ref else None, how
 
 
 def dense_points(stage, board, ref, grid):
@@ -107,7 +93,7 @@ def dense_points(stage, board, ref, grid):
 
 def main() -> int:
     grid = int(sys.argv[1]) if len(sys.argv) > 1 else 5
-    budget = int(sys.argv[2]) if len(sys.argv) > 2 else 60
+    budget = int(sys.argv[2]) if len(sys.argv) > 2 else 40
     S.enable_dpi_awareness()
     solver = S.Solver(grid=grid, part=1, dry_run=False)
     mouse, clf = solver.mouse, solver.clf
@@ -115,32 +101,28 @@ def main() -> int:
     img = S.grab()
     board, ref, stage, how = locate(img, grid)
     print(f"locate={how} board={board.box if board else None} ref={ref.box if ref else None}", flush=True)
-    if board is None or ref is None:
+    if not (board and ref and stage):
         print("!! 定位失败，中止")
         return 2
     cw, ch = board.w / grid, board.h / grid
     cells = S.cell_rects(board, grid)
-    print(f"cell=({cw:.0f}x{ch:.0f}) 容差≈{cw * 0.14:.0f}px", flush=True)
-
     labels = [S.BLANK if S.is_blank(img[c.y:c.y + c.h, c.x:c.x + c.w])
               else clf.predict([img[c.y:c.y + c.h, c.x:c.x + c.w]])[0][0]
               for c in S.cell_rects(ref, grid)]
+    print(f"cell=({cw:.0f}x{ch:.0f}) 参考格类别={labels}", flush=True)
+
+    # --- 全清盘：棋盘上任何内容都拖回托盘（不用抓取判断） ---
     filled = S.filled_cells(img, board, grid)
-    print(f"filled {sum(filled)}/25 -> {[i for i, v in enumerate(filled) if v]}", flush=True)
+    dirty = [i for i, v in enumerate(filled) if v]
+    if dirty:
+        print(f"清盘：棋盘上有内容的格子 {dirty}，全部拖回托盘", flush=True)
+        for i in dirty:
+            c = cells[i]
+            mouse.drag(c.cx, c.cy, stage.x + cw * 0.6, stage.y + stage.h * 0.5)
+            time.sleep(0.08)
+        img = S.grab()
 
-    # 清盘：棋盘上非吸附的松散块拖回托盘左侧
-    if sum(filled) > 0:
-        for i, is_fill in enumerate(filled):
-            if not is_fill:
-                continue
-            cell = cells[i]
-            if not snapped(mouse, S.grab(), cell, cw, ch):
-                tx = stage.x + cw * 0.6
-                ty = stage.y + stage.h * 0.5
-                mouse.drag(cell.cx, cell.cy, tx, ty)
-                filled[i] = False
-        print(f"清盘后 filled {sum(filled)}/25", flush=True)
-
+    # --- 库存 ---
     inv: dict[str, list[tuple[float, float, float]]] = {}
     for (x, y) in dense_points(stage, board, ref, grid):
         if not piece_like(img, x, y, cw, ch):
@@ -154,67 +136,54 @@ def main() -> int:
         inv[k].sort(reverse=True)
     print("inventory:", {k: len(v) for k, v in sorted(inv.items(), key=lambda t: -len(t[1]))}, flush=True)
 
-    placed: dict[int, tuple[float, float]] = {}
+    base = prog(S.grab())
+    placed: list[int] = []
     attempts = 0
     while attempts < budget:
         img = S.grab()
         filled = S.filled_cells(img, board, grid)
         for i in placed:
             filled[i] = True
-        # 双重确认：像素有内容 **且** 内容类别与参考格一致，才算"已填"。
-        # 否则是松散块（拖过去没吸附的），先拖回托盘，别让它骗停主循环。
-        for i, is_fill in enumerate(filled):
-            if not is_fill or i in placed:
-                continue
-            c = cells[i]
-            lab = clf.predict([img[c.y:c.y + c.h, c.x:c.x + c.w]])[0][0]
-            if lab == labels[i]:
-                continue
-            if snapped(mouse, S.grab(), c, cw, ch):
-                continue                      # 真吸附了，只是分类不同，保留
-            tx = stage.x + cw * 0.6
-            ty = stage.y + stage.h * 0.5
-            mouse.drag(c.cx, c.cy, tx, ty)
-            filled[i] = False
-            print(f"    清掉 cell{i} 的松散块（内容={lab} 与参考={labels[i]} 不符）", flush=True)
         anch = S.anchored_cells(filled, grid)
-        todo = [i for i in range(grid * grid) if not filled[i] and i in anch and labels[i] != S.BLANK]
+        todo = [i for i in range(grid * grid) if not filled[i] and i in anch and i not in placed]
         if not todo:
             print("没有可放的目标格")
             break
-        need = labels[todo[0]]
-        same_class = [i for i in todo if labels[i] == need]
+        # 选"库存里同类块最多"的格子，减少空跑
+        todo.sort(key=lambda i: -len(inv.get(labels[i], [])))
+        cell_idx = todo[0]
+        need = labels[cell_idx]
         pieces = inv.get(need, [])
-        print(f"\n=== 需要 {need}: 同类空格 {same_class}, 库存 {len(pieces)}", flush=True)
+        print(f"\n=== cell{cell_idx} need={need} 库存 {len(pieces)}", flush=True)
         if not pieces:
-            for i in same_class:
-                labels[i] = S.BLANK
+            print("    库存无此类，跳过", flush=True)
+            labels[cell_idx] = S.BLANK
             continue
-        done = False
-        for score, px, py in pieces[:3]:
-            for cell_idx in same_class:
-                cell = cells[cell_idx]
-                for dx, dy in NUDGES:
-                    mouse.drag(px, py, cell.cx + dx, cell.cy + dy)
-                    time.sleep(0.1)
-                    attempts += 1
-                    if snapped(mouse, S.grab(), cell, cw, ch):
-                        print(f"    ** cell{cell_idx} <- ({px:.0f},{py:.0f}) 成功 {score:.2f}", flush=True)
-                        placed[cell_idx] = (cell.cx + dx, cell.cy + dy)
-                        done = True
-                        break
-                    mouse.drag(cell.cx + dx, cell.cy + dy, px, py)
-                    if attempts >= budget:
-                        break
-                if done or attempts >= budget:
+        cell = cells[cell_idx]
+        ok = False
+        for score, px, py in pieces[:2]:
+            for dx, dy in NUDGES:
+                p0 = prog(S.grab())
+                mouse.drag(px, py, cell.cx + dx, cell.cy + dy)
+                time.sleep(0.18)
+                p1 = prog(S.grab())
+                attempts += 1
+                if diff(p0, p1) > 6.0:                 # 进度 +1 = 游戏认可
+                    print(f"    ** cell{cell_idx} <- ({px:.0f},{py:.0f}) 进度+1 ({score:.2f})", flush=True)
+                    placed.append(cell_idx)
+                    ok = True
                     break
-            if done or attempts >= budget:
+                mouse.drag(cell.cx + dx, cell.cy + dy, px, py)   # 拖回原处
+                if attempts >= budget:
+                    break
+            if ok or attempts >= budget:
                 break
-        if not done and attempts >= budget:
-            print("    达到预算，停止")
-            break
+        if not ok:
+            print(f"    cell{cell_idx} 试满未吸附，换格", flush=True)
+            if attempts >= budget:
+                break
 
-    print(f"\n[done] placed {len(placed)}/25, drags {attempts}", flush=True)
+    print(f"\n[done] 进度确认放置 {len(placed)} 块, drags {attempts}", flush=True)
     print("cells:", sorted(placed), flush=True)
     return 0
 
