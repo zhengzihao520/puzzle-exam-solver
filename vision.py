@@ -37,7 +37,8 @@ TRAY_REGIONS = {"left": (10, 460, 420, 1000), "right": (990, 1440, 420, 1000)}
 
 GAP_LEVEL = 60.0        # darker than this on a band profile = gap between pieces
 EMPTY_LEVEL = 45.0      # a tray cell darker than this holds no piece
-BLANK_LEVEL = 205.0     # a piece brighter than this is the white decoy
+BOARD_FILLED_LEVEL = 60.0  # board cell brighter than this shows a placed piece
+BLANK_FRACTION = 0.55    # this share of near-white pixels marks the white decoy piece
 MIN_RUN = 6
 CLASSES = ["dog", "cat", "elephant", "desktop", "bicycle", "car", "chair", "cup",
            "airplane", "backpack", "umbrella", "suitcase", "penguin", "tafei", "nailong"]
@@ -133,16 +134,25 @@ def tray_slots(img: np.ndarray, band: str,
     return [(ri, ci, (cx0, ry0, cx1 - cx0 + 1, ry1 - ry0 + 1))
             for ri, (ry0, ry1) in enumerate(rows)
             for ci, (cx0, cx1) in enumerate(cols)]
+
 def cell_of(img: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
     return sub(img, box)
 
 
 def is_empty(cell: np.ndarray) -> bool:
-    return float(cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY).mean()) < EMPTY_LEVEL
+    """An empty slot is flat dark tray background, not merely a dark piece.
+
+    Measured: empty slots are (9, 9, 9) everywhere (std 0.0), while dark *photos*
+    reach std 8-30 with bright specks up to 255 -- so flatness separates them.
+    """
+    g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
+    return float(g.mean()) < EMPTY_LEVEL and float(g.std()) < 3.0
 
 
 def is_blank(cell: np.ndarray) -> bool:
-    return float(cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY).mean()) > BLANK_LEVEL
+    """White decoy piece: most of the cell is near white (borders excluded by design)."""
+    g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
+    return float((g > 200).mean()) >= BLANK_FRACTION
 
 
 class Classifier:
@@ -155,11 +165,10 @@ class Classifier:
         self.imgsz = imgsz
 
     def probs(self, cell: np.ndarray) -> np.ndarray:
-        import cv2 as _cv2
         out = []
         for size in self.imgsz:
             for flip in (False, True):
-                view = _cv2.flip(cell, 1) if flip else cell
+                view = cv2.flip(cell, 1) if flip else cell
                 res = self.model.predict(view, imgsz=size, verbose=False)[0]
                 out.append(res.probs.data.cpu().numpy())
         return np.mean(out, axis=0)
@@ -171,9 +180,31 @@ class Classifier:
         return str(self.names[int(p.argmax())]), float(p.max())
 
 
+def find_reference(img: np.ndarray) -> Rect:
+    """Right-hand reference panel: the largest bright blob right of the board.
+
+    Detected rather than hard coded because the page shifts a few pixels between
+    games; the measured box (1435, 517, 451, 339) is the fallback.
+    """
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    bright = cv2.morphologyEx((g > 150).astype(np.uint8), cv2.MORPH_CLOSE,
+                              np.ones((9, 9), np.uint8))
+    n, _lab, stats, _cent = cv2.connectedComponentsWithStats(bright)
+    best = None
+    for i in range(1, n):
+        x, y, w, h, area = (int(v) for v in stats[i][:5])
+        if x < 900 or w < 200 or area < 30000:
+            continue
+        if not 1.2 <= w / h <= 1.45:
+            continue
+        if best is None or area > best[4]:
+            best = (x, y, w, h, area)
+    return Rect(*best[:4]) if best else Rect(*REFERENCE)
+
+
 def reference_grid(img: np.ndarray, n: int, clf: Classifier) -> list[str]:
     """Required class per board cell, row-major (index = row * n + col)."""
-    ref = Rect(*REFERENCE)
+    ref = find_reference(img)
     return [clf.label(sub(img, box))[0] for _r, _c, box in ref.cells(n)]
 
 
@@ -192,9 +223,18 @@ def tray_cells(img: np.ndarray, clf: Classifier, n: int | None = None
 
 
 def board_filled(img: np.ndarray, n: int) -> list[bool]:
-    """A board cell is filled when it is no longer the dark placeholder."""
+    """A board cell is filled once it shows a photo instead of the dark placeholder.
+
+    Measured: the placeholder sits at mean 23-27 (a few cells carry a faint ghost,
+    std up to 30), while the darkest real piece still averages 73 -- so the board
+    needs a brightness test, not the flatness test used for tray slots.
+    """
     board = Rect(*BOARD)
-    return [not is_empty(sub(img, box)) for _r, _c, box in board.cells(n)]
+    out = []
+    for _r, _c, box in board.cells(n):
+        g = cv2.cvtColor(sub(img, box), cv2.COLOR_BGR2GRAY)
+        out.append(float(g.mean()) >= BOARD_FILLED_LEVEL)
+    return out
 
 
 def read_progress(img: np.ndarray) -> str:

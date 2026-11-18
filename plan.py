@@ -16,10 +16,10 @@ Nothing is dragged here, so it is safe to run against a live page.
 from __future__ import annotations
 
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
-
 import cv2
+import numpy as np
 
 import vision
 
@@ -55,59 +55,98 @@ def main() -> int:
         raise SystemExit(f"cannot read {path}")
     n = 5
     clf = vision.Classifier()
-
-    needed = vision.reference_grid(img, n, clf)
-    pieces = vision.tray_cells(img, clf)
+    ref = vision.find_reference(img)
+    ref_cells = [vision.sub(img, box) for _r, _c, box in ref.cells(n)]
+    piece_cells = []
+    for band in ("left", "right"):
+        for ri, ci, box in vision.tray_slots(img, band):
+            cell = vision.sub(img, box)
+            if not vision.is_empty(cell):
+                piece_cells.append((band, f"{band[0]}{ri + 1}{ci + 1}", ri, ci, box, cell))
     filled = vision.board_filled(img, n)
 
     print(f"image      : {path.name}  {img.shape[1]}x{img.shape[0]}")
+    print(f"reference  : {ref}  ({ref.w / n:.1f}x{ref.h / n:.1f} per cell)")
     print(f"board      : {sum(filled)}/{n * n} cells already filled")
-    print(f"reference  : {len(needed)} cells classified")
-    print(f"tray       : {len(pieces)} pieces classified\n")
+    print(f"tray       : {len(piece_cells)} pieces in "
+          f"{len(vision.tray_rows(img))}x3 slots per band\n")
 
-    quota = Counter(needed)
-    have = Counter(p[1] for p in pieces)
+    # ---- probabilities: pieces x reference cells -------------------------
+    ref_probs, ref_txt = [], []
+    for cell in ref_cells:
+        if vision.is_blank(cell):
+            ref_probs.append(None)
+            ref_txt.append("blank")
+        else:
+            p = clf.probs(cell)
+            ref_probs.append(p)
+            ref_txt.append(str(clf.names[int(p.argmax())]))
+    piece_probs, piece_txt = [], []
+    for item in piece_cells:
+        cell = item[5]
+        if vision.is_blank(cell):
+            piece_probs.append(None)
+            piece_txt.append("blank")
+        else:
+            p = clf.probs(cell)
+            piece_probs.append(p)
+            piece_txt.append(str(clf.names[int(p.argmax())]))
+
+    def score(ci: int, pi: int) -> float:
+        """How well piece pi fills reference cell ci."""
+        if ref_txt[ci] == "blank" or piece_txt[pi] == "blank":
+            return 1.0 if ref_txt[ci] == piece_txt[pi] else -1.0
+        rp, pp = ref_probs[ci], piece_probs[pi]
+        return float(np.dot(rp, pp))          # probability that both mean the class
+
+    # ---- global greedy assignment, best pair first ----------------------
+    pairs = sorted(((score(ci, pi), ci, pi)
+                    for ci in range(len(ref_cells))
+                    for pi in range(len(piece_cells))), reverse=True)
+    cell_of = {}
+    taken = set()
+    for s, ci, pi in pairs:
+        if s <= 0 or ci in cell_of or pi in taken:
+            continue
+        cell_of[ci] = pi
+        taken.add(pi)
+
+    need = Counter(ref_txt)
+    have = Counter(piece_txt)
     print("class        need  have")
-    for cls in sorted(set(quota) | set(have), key=lambda k: (-quota[k], k)):
-        flag = "" if have[cls] >= quota[cls] else "   <-- short"
-        print(f"  {cls:10s} {quota[cls]:4d} {have[cls]:5d}{flag}")
-    print()
-
-    pool: dict[str, list] = defaultdict(list)
-    for piece in pieces:
-        pool[piece[1]].append(piece)
+    for cls in sorted(set(need) | set(have), key=lambda k: (-need[k], k)):
+        flag = "" if have[cls] >= need[cls] else "   <-- short"
+        print(f"  {cls:10s} {need[cls]:4d} {have[cls]:5d}{flag}")
 
     plan = []
-    missing = []
     for idx in spiral(n):
-        if filled[idx]:
+        ci = idx
+        if filled[idx] or ci not in cell_of:
             continue
-        cls = needed[idx]
-        if not pool[cls]:
-            missing.append((idx, cls))
-            continue
-        piece = pool[cls].pop(0)
+        pi = cell_of[ci]
+        band, key, pri, pci, box, _cell = piece_cells[pi]
         r, c = divmod(idx, n)
-        bx, by, bw, bh = vision.Rect(*vision.BOARD).cells(n)[idx][2]
-        plan.append((idx, r, c, cls, piece, (bx + bw // 2, by + bh // 2)))
+        _rr, _cc, (bx, by, bw, bh) = vision.Rect(*vision.BOARD).cells(n)[idx]
+        plan.append((idx, r, c, ref_txt[ci], piece_txt[pi], key, box,
+                     (bx + bw // 2, by + bh // 2)))
 
-    print(f"plan: {len(plan)} moves")
-    for idx, r, c, cls, piece, (tx, ty) in plan:
-        band, plabel, pri, pci, key, box = piece
+    print(f"\nplan: {len(plan)} moves")
+    for idx, r, c, want, got, key, box, (tx, ty) in plan:
         sx, sy = box[0] + box[2] // 2, box[1] + box[3] // 2
-        print(f"  cell({r + 1},{c + 1}) <- {cls:10s} {key:4s} {plabel:9s} "
-              f"({sx:4d},{sy:4d}) -> ({tx:4d},{ty:4d})")
+        mark = "" if want == got else "  (labels differ)"
+        print(f"  cell({r + 1},{c + 1}) need {want:9s} <- {key:4s} {got:9s} "
+              f"({sx:4d},{sy:4d}) -> ({tx:4d},{ty:4d}){mark}")
 
-    left_over = [p for cls in pool for p in pool[cls]]
-    print(f"\nunused pieces: {len(left_over)} "
-          f"{Counter(p[1] for p in left_over).most_common()}")
-    if missing:
-        print(f"cells without a usable piece: {[(i, k) for i, k in missing]}")
+    unused = [piece_cells[i][1] for i in range(len(piece_cells)) if i not in taken]
+    unfilled = [f"({i // n + 1},{i % n + 1})" for i in spiral(n)
+                if not filled[i] and i not in cell_of]
+    print(f"\nunused pieces: {len(unused)} {unused}")
+    if unfilled:
+        print(f"cells left without a piece: {unfilled}")
 
     # annotated copy for eyeballing
     vis = img.copy()
-    for idx, r, c, cls, piece, (tx, ty) in plan:
-        band, plabel, pri, pci, key, box = piece
+    for idx, r, c, want, got, key, box, (tx, ty) in plan:
         sx, sy = box[0] + box[2] // 2, box[1] + box[3] // 2
         cv2.rectangle(vis, (box[0], box[1]), (box[0] + box[2], box[1] + box[3]),
                       (0, 255, 0), 2)
