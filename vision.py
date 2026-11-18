@@ -73,6 +73,39 @@ def sub(img: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
     return img[y:y + h, x:x + w]
 
 
+
+# ---- calibrated geometry, expressed relative to the reference panel --------
+# Measured on the calibrated screenshot: reference panel at (1435, 517) 451x339,
+# board at (463, 460) 530x418, tray bands at x 10..460 / 990..1440, y 420..1000.
+# Everything is re-derived from the panel on every grab, so browser scroll and zoom
+# no longer break the constants.
+CAL_REF = (451.0, 339.0)
+BOARD_REL = (-972.0, -57.0, 530.0, 418.0)
+TRAY_REL = {"left": (-1425.0, -975.0, -97.0, 483.0),
+            "right": (-445.0, 5.0, -97.0, 483.0)}
+
+
+def layout(img: np.ndarray) -> tuple[Rect, Rect, dict[str, tuple[int, int, int, int]]]:
+    """(reference, board, tray regions) for whatever scroll/zoom the page is at."""
+    ref = find_reference(img)
+    sx, sy = ref.w / CAL_REF[0], ref.h / CAL_REF[1]
+
+    def board_box() -> Rect:
+        dx, dy, dw, dh = BOARD_REL
+        return Rect(int(ref.x + dx * sx), int(ref.y + dy * sy),
+                    int(dw * sx), int(dh * sy))
+
+    regions = {}
+    for band, (dx0, dx1, dy0, dy1) in TRAY_REL.items():
+        regions[band] = (int(ref.x + dx0 * sx), int(ref.x + dx1 * sx),
+                         int(ref.y + dy0 * sy), int(ref.y + dy1 * sy))
+    return ref, board_box(), regions
+
+
+def tray_region(img: np.ndarray, band: str) -> tuple[int, int, int, int]:
+    return layout(img)[2][band]
+
+
 def _gap_runs(profile: np.ndarray, threshold: float = 0.75) -> list[tuple[int, int]]:
     """Runs where the profile stays above `threshold` (a real gap spans the whole band)."""
     mask = profile > threshold
@@ -111,7 +144,7 @@ def _dark_frac(g: np.ndarray) -> np.ndarray:
 
 def tray_rows(img: np.ndarray) -> list[tuple[int, int]]:
     """Row spans shared by both bands (they sit in one grid, so rows must agree)."""
-    boxes = [TRAY_REGIONS[b] for b in ("left", "right")]
+    boxes = [tray_region(img, b) for b in ("left", "right")]
     y0, y1 = boxes[0][2], boxes[0][3]
     stacked = np.concatenate([cv2.cvtColor(img[b[2]:b[3], b[0]:b[1]], cv2.COLOR_BGR2GRAY)
                               for b in boxes], axis=1)
@@ -120,7 +153,7 @@ def tray_rows(img: np.ndarray) -> list[tuple[int, int]]:
 
 
 def tray_cols(img: np.ndarray, band: str) -> list[tuple[int, int]]:
-    x0, x1, y0, y1 = TRAY_REGIONS[band]
+    x0, x1, y0, y1 = tray_region(img, band)
     g = cv2.cvtColor(img[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY).astype(np.float32)
     return _keep_regular(_spans(_gap_runs(_dark_frac(g).mean(axis=0)), x0))
 
@@ -143,10 +176,11 @@ def is_empty(cell: np.ndarray) -> bool:
     """An empty slot is flat dark tray background, not merely a dark piece.
 
     Measured: empty slots are (9, 9, 9) everywhere (std 0.0), while dark *photos*
-    reach std 8-30 with bright specks up to 255 -- so flatness separates them.
+    reach std 8-30 (a just-emptied slot keeps a stray pixel: std 3.2), so the
+    flatness cut sits at 6.
     """
     g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
-    return float(g.mean()) < EMPTY_LEVEL and float(g.std()) < 3.0
+    return float(g.mean()) < EMPTY_LEVEL and float(g.std()) < 6.0
 
 
 def is_blank(cell: np.ndarray) -> bool:
@@ -204,7 +238,7 @@ def find_reference(img: np.ndarray) -> Rect:
 
 def reference_grid(img: np.ndarray, n: int, clf: Classifier) -> list[str]:
     """Required class per board cell, row-major (index = row * n + col)."""
-    ref = find_reference(img)
+    ref = layout(img)[0]
     return [clf.label(sub(img, box))[0] for _r, _c, box in ref.cells(n)]
 
 
@@ -229,7 +263,7 @@ def board_filled(img: np.ndarray, n: int) -> list[bool]:
     std up to 30), while the darkest real piece still averages 73 -- so the board
     needs a brightness test, not the flatness test used for tray slots.
     """
-    board = Rect(*BOARD)
+    board = layout(img)[1]
     out = []
     for _r, _c, box in board.cells(n):
         g = cv2.cvtColor(sub(img, box), cv2.COLOR_BGR2GRAY)
