@@ -1,0 +1,85 @@
+{
+  "seed": 20261117,
+  "grid": 5,
+  "classes": {
+    "dog": {
+      "photos": 40,
+      "train": 850,
+      "val": 150
+    },
+    "cat": {
+      "photos": 40,
+      "train": 850,
+      "val": 150
+    },
+    "elephant": {
+      "photos": 40,
+      "train": 850,
+      "val": 150
+    },
+    "desktop": {
+      "photos": 40,
+      "train": 850,
+      "val": 150
+    },
+    "bicycle": {
+      "photos": 20,
+      "train": 425,
+      "val": 75
+    },
+    "car": {
+      "photos": 20,
+      "train": 425,
+      "val": 75
+    },
+    "chair": {
+      "photos": 20,
+      "train": 425,
+      "val": 75
+    },
+    "cup": {
+      "photos": 20,
+      "train": 425,
+      "val": 75
+    },
+    "airplane": {
+      "photos": 20,
+      "train": 425,
+      "val": 75
+    },
+    "backpack": {
+      "photos": 20,
+      "train": 425,
+      "val": 75
+    },
+    "umbrella": {
+      "photos": 20,
+      "train": 425,
+      "val": 75
+    },
+    "suitcase": {
+      "photos": 20,
+      "train": 425,
+      "val": 75
+    },
+    "penguin": {
+      "photos": 159,
+      "train": 3375,
+      "val": 600
+    },
+    "tafei": {
+      "photos": 133,
+      "train": 2825,
+      "val": 500
+    },
+    "nailong": {
+      "photos": 136,
+      "train": 2900,
+      "val": 500
+    }
+  },
+  "totals": {
+    "train": 15900,
+    "val": 2800
+  }
+}
