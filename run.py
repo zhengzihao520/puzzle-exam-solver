@@ -1,4 +1,4 @@
-﻿"""Live runner: drags planned pieces onto the board with real mouse events.
+"""Live runner: drags planned pieces onto the board with real mouse events.
 
 Usage:
   python run.py --dry               print the moves, touch nothing
@@ -23,6 +23,21 @@ import cv2
 import numpy as np
 
 import vision
+
+
+def _enable_dpi() -> None:
+    """Must run before any window/GDI query, otherwise sizes come back as 1536x864."""
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+_enable_dpi()
 
 ROOT = Path(__file__).resolve().parent
 LOG = ROOT / "logs"
@@ -53,14 +68,15 @@ def reading(img: np.ndarray, clf: vision.Classifier, n: int = 5):
     ref = vision.find_reference(img)
     ref_cells = [vision.sub(img, box) for _r, _c, box in ref.cells(n)]
     pieces = []
-    rows = vision.tray_rows(img)
-    for band in ("left", "right"):
-        for ri, ci, box in vision.tray_slots(img, band, rows):
-            cell = vision.sub(img, box)
-            if not vision.is_empty(cell):
-                pieces.append({"band": band, "row": ri, "col": ci,
-                               "key": f"{band[0]}{ri + 1}{ci + 1}",
-                               "box": box, "cell": cell})
+    per_band: dict[str, int] = {}
+    for band, box in vision.tray_pieces(img):
+        cell = vision.sub(img, box)
+        if vision.is_empty(cell):
+            continue
+        n = per_band.get(band, 0)
+        per_band[band] = n + 1
+        pieces.append({"band": band, "row": n // 3, "col": n % 3,
+                       "key": f"{band[0]}{n + 1}", "box": box, "cell": cell})
     ref_probs, ref_txt = [], []
     for cell in ref_cells:
         if vision.is_blank(cell):
@@ -72,7 +88,7 @@ def reading(img: np.ndarray, clf: vision.Classifier, n: int = 5):
             ref_txt.append(str(clf.names[int(p.argmax())]))
     piece_probs, piece_txt = [], []
     for item in pieces:
-        if vision.is_blank(item["cell"]):
+        if vision.is_white_piece(item["cell"]):
             piece_probs.append(None)
             piece_txt.append("blank")
         else:
@@ -137,32 +153,43 @@ class Mouse:
         g.moveTo(int(src[0]), int(src[1]), duration=self.speed * 0.5)
         time.sleep(self.settle)
         g.mouseDown()
+        try:
+            return self._drag_body(g, src, dst, probe)
+        finally:
+            g.mouseUp()
+            time.sleep(self.settle * 2)
+
+    def _drag_body(self, g, src, dst, probe) -> bool:
         time.sleep(self.settle * 2)
         # a short sideways tug proves the engine actually grabbed a piece
         g.moveTo(int(src[0]) + 18, int(src[1]) + 8, duration=0.12)
         time.sleep(self.settle)
         if probe is not None:
-            lifted = cv2.cvtColor(vision.sub(self.shot(), probe), cv2.COLOR_BGR2GRAY)
-            was = cv2.cvtColor(vision.sub(self._first, probe), cv2.COLOR_BGR2GRAY)
-            if abs(float(lifted.mean()) - float(was.mean())) < 10 and float(lifted.std()) > 6:
-                g.mouseUp()
-                time.sleep(self.settle * 2)
+            # whole-band frame difference: a real pickup moves ~10k pixels, a missed
+            # mousedown changes nothing (the earlier 112x85 patch test was too noisy)
+            now = self.shot()
+            band = probe[4] if len(probe) > 4 else None
+            if band:
+                rx0, rx1, ry0, ry1 = vision.tray_region(self._first, band)
+                region = (rx0, ry0, rx1 - rx0, ry1 - ry0)
+            else:
+                region = (0, 400, 1920, 600)
+            a = cv2.cvtColor(vision.sub(self._first, region), cv2.COLOR_BGR2GRAY).astype(np.int16)
+            b = cv2.cvtColor(vision.sub(now, region), cv2.COLOR_BGR2GRAY).astype(np.int16)
+            if float(np.abs(a - b).mean()) < 1.0:
                 return False
         g.moveTo(int(src[0] + (dst[0] - src[0]) * 0.75), int(src[1] + (dst[1] - src[1]) * 0.75),
                  duration=self.speed)
         g.moveTo(int(dst[0]), int(dst[1]), duration=self.speed * 0.6)
         time.sleep(self.settle * 2)
-        g.mouseUp()
-        time.sleep(self.settle * 3)
         return True
 
     _first: np.ndarray | None = None
 
 
-FULL_W, FULL_H = 1750, 950          # a real fullscreen page on the 1920x1080 screen
 
 
-def check_foreground(marker: str = "鎷煎浘") -> tuple[bool, str]:
+def check_foreground(marker: str = "Edge") -> tuple[bool, str]:
     """Only look, never switch: the page must already be the maximised foreground window."""
     import ctypes
     from ctypes import wintypes
@@ -174,10 +201,11 @@ def check_foreground(marker: str = "鎷煎浘") -> tuple[bool, str]:
     user32.GetWindowRect(hwnd, ctypes.byref(rect))
     w, h = rect.right - rect.left, rect.bottom - rect.top
     if marker not in title.value:
-        return False, f"{title.value!r} {w}x{h} -- abort: the exam page is not in the foreground"
-    if w < FULL_W or h < FULL_H:
-        return False, (f"{title.value!r} {w}x{h} -- abort: the window is not fullscreen, "
-                       f"the layout would be wrong")
+        return False, f"{title.value!r} {w}x{h} -- abort: the exam page is not the foreground window"
+    sw, sh = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+    if w < sw * 0.97 or h < sh * 0.97:
+        return False, (f"{title.value!r} {w}x{h} on a {sw}x{sh} screen -- abort: "
+                       f"the window is not maximised, the layout would be wrong")
     return True, f"{title.value!r} {w}x{h}"
 
 def centre(box: tuple[int, int, int, int]) -> tuple[int, int]:
@@ -245,21 +273,34 @@ def main() -> int:
             continue
         src = centre(m["piece"]["box"])
         mouse._first = before
-        picked = mouse.drag(src, m["target"], probe=m["piece"]["box"])
+        picked = mouse.drag(src, m["target"], probe=(*m["piece"]["box"], m["piece"]["band"]))
         after = vision.grab()
         if not picked:
             print("   pickup failed (the engine never grabbed the piece) -- retrying once")
             time.sleep(0.4)
             before = vision.grab()
             mouse._first = before
-            picked = mouse.drag(src, m["target"], probe=m["piece"]["box"])
+            picked = mouse.drag(src, m["target"], probe=(*m["piece"]["box"], m["piece"]["band"]))
             after = vision.grab()
             if not picked:
                 print("   pickup failed twice -- stopping, nothing was moved")
                 return 1
         cell_ok = float(cv2.cvtColor(vision.sub(after, m["board_box"]),
                                      cv2.COLOR_BGR2GRAY).mean()) >= vision.BOARD_FILLED_LEVEL
-        slot_ok = vision.is_empty(vision.sub(after, m["piece"]["box"]))
+        # the tray keeps a drag ghost for ~0.5 s, so poll and accept a clear drop
+        # in brightness as proof that the piece left the slot
+        before_mean = float(cv2.cvtColor(vision.sub(before, m["piece"]["box"]),
+                                         cv2.COLOR_BGR2GRAY).mean())
+        slot_ok = False
+        for _attempt in range(4):
+            slot_now = cv2.cvtColor(vision.sub(after, m["piece"]["box"]),
+                                    cv2.COLOR_BGR2GRAY)
+            slot_ok = (vision.is_empty(vision.sub(after, m["piece"]["box"]))
+                       or float(slot_now.mean()) < before_mean * 0.35)
+            if slot_ok:
+                break
+            time.sleep(0.4)
+            after = vision.grab()
         if cell_ok and slot_ok:
             done += 1
             print("   ok: board cell filled, tray slot empty")

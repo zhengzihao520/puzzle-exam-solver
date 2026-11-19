@@ -37,8 +37,10 @@ TRAY_REGIONS = {"left": (10, 460, 420, 1000), "right": (990, 1440, 420, 1000)}
 
 GAP_LEVEL = 60.0        # darker than this on a band profile = gap between pieces
 EMPTY_LEVEL = 45.0      # a tray cell darker than this holds no piece
+EMPTY_P99 = 20.0        # ... and its 99th percentile is still near black
 BOARD_FILLED_LEVEL = 60.0  # board cell brighter than this shows a placed piece
-BLANK_FRACTION = 0.55    # this share of near-white pixels marks the white decoy piece
+BLANK_BLOCK_FRACTION = 0.88
+WHITE_PIECE_FRACTION = 0.65    # this share of near-white pixels marks the white decoy piece
 MIN_RUN = 6
 CLASSES = ["dog", "cat", "elephant", "desktop", "bicycle", "car", "chair", "cup",
            "airplane", "backpack", "umbrella", "suitcase", "penguin", "tafei", "nailong"]
@@ -173,20 +175,47 @@ def cell_of(img: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
 
 
 def is_empty(cell: np.ndarray) -> bool:
-    """An empty slot is flat dark tray background, not merely a dark piece.
+    """An empty slot is flat dark tray background.
 
-    Measured: empty slots are (9, 9, 9) everywhere (std 0.0), while dark *photos*
-    reach std 8-30 (a just-emptied slot keeps a stray pixel: std 3.2), so the
-    flatness cut sits at 6.
+    Measured on real frames: empty slots have mean 9-13 and a 99th percentile of
+    8-9 (a handful of stray bright pixels survive the drag animation), while every
+    photo piece -- even a night shot -- has a 99th percentile well above 60.
+    A plain mean/std test misread those stray pixels as pieces.
     """
     g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
-    return float(g.mean()) < EMPTY_LEVEL and float(g.std()) < 6.0
+    return float(g.mean()) < EMPTY_LEVEL and float(np.percentile(g, 99)) < EMPTY_P99
 
 
 def is_blank(cell: np.ndarray) -> bool:
-    """White decoy piece: most of the cell is near white (borders excluded by design)."""
+    """White decoy piece: *every* part of the cell is near white.
+
+    A plain "share of white pixels" test also fires on product photos shot on a
+    white background (desktop computer, cup): those have an object in the middle,
+    so the worst 4x3 block still contains plenty of non-white pixels. The decoy
+    piece has no content at all, so its worst block is white too.
+    """
     g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
-    return float((g > 200).mean()) >= BLANK_FRACTION
+    h, w = g.shape
+    worst = 1.0
+    for ry in range(3):
+        for rx in range(4):
+            block = g[ry * h // 3:(ry + 1) * h // 3, rx * w // 4:(rx + 1) * w // 4]
+            worst = min(worst, float((block > 200).mean()))
+    return worst >= BLANK_BLOCK_FRACTION
+
+
+def is_white_piece(cell: np.ndarray) -> bool:
+    """White decoy *piece* in the tray.
+
+    The tray renders a piece with a thin dark rim and a soft shadow, so the
+    per-block test used for reference thumbnails can never pass; trimming 3 px and
+    looking at the share of near-white pixels separates the decoys (0.70-0.97)
+    from product photos that merely have white backgrounds (<=0.61 here).
+    """
+    g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)[3:-3, 3:-3]
+    if g.size == 0:
+        return False
+    return float((g > 190).mean()) >= WHITE_PIECE_FRACTION
 
 
 class Classifier:
@@ -253,6 +282,38 @@ def tray_cells(img: np.ndarray, clf: Classifier, n: int | None = None
                 continue
             label, conf = clf.label(cell)
             out.append((band, label, ri, ci, f"{band[0]}{ri + 1}{ci + 1}", box))
+    return out
+
+
+PIECE_AREA = 9520          # 112 x 85, the area of one tray piece
+
+
+def tray_pieces(img: np.ndarray) -> list[tuple[str, tuple[int, int, int, int]]]:
+    """Locate tray pieces by connected components.
+
+    The gap-grid works while the tray is full, but once most slots are empty the
+    gaps disappear and the grid cannot be recovered.  Components stay reliable in
+    both cases; blobs that clearly hold two touching pieces are split.
+    """
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    out = []
+    for band in ("left", "right"):
+        x0, x1, y0, y1 = tray_region(img, band)
+        mask = cv2.morphologyEx((g[y0:y1, x0:x1] > 40).astype(np.uint8),
+                                cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        n, _lab, stats, _cent = cv2.connectedComponentsWithStats(mask)
+        for i in range(1, n):
+            x, y, w, h, area = (int(v) for v in stats[i][:5])
+            if area < PIECE_AREA * 0.45:
+                continue
+            count = max(1, round(area / PIECE_AREA))
+            step = (w if w >= h else h) / count
+            for k in range(count):
+                if w >= h:
+                    bx, by, bw, bh = x0 + x + int(k * step), y0 + y, int(step), h
+                else:
+                    bx, by, bw, bh = x0 + x, y0 + y + int(k * step), w, int(step)
+                out.append((band, (bx, by, bw, bh)))
     return out
 
 
