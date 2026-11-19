@@ -48,22 +48,30 @@ def _enable_dpi() -> None:
             pass
 
 
-def check_foreground(marker: str = "Edge") -> tuple[bool, str]:
+def check_foreground(marker: str = "Edge", tries: int = 6) -> tuple[bool, str]:
+    """Look only, never switch windows -- and tolerate a window caught mid-transition."""
     import ctypes
     from ctypes import wintypes
     u = ctypes.windll.user32
-    hwnd = u.GetForegroundWindow()
-    title = ctypes.create_unicode_buffer(512)
-    u.GetWindowTextW(hwnd, title, 512)
-    r = wintypes.RECT()
-    u.GetWindowRect(hwnd, ctypes.byref(r))
-    w, h = r.right - r.left, r.bottom - r.top
-    sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
-    if marker not in title.value:
-        return False, f"{w}x{h} on {sw}x{sh} -- abort: exam page is not foreground"
-    if w < sw * 0.97 or h < sh * 0.93:
-        return False, f"{w}x{h} on {sw}x{sh} -- abort: window is not maximised"
-    return True, f"{w}x{h} on {sw}x{sh}"
+    why = "no window"
+    for _ in range(tries):
+        hwnd = u.GetForegroundWindow()
+        title = ctypes.create_unicode_buffer(512)
+        u.GetWindowTextW(hwnd, title, 512)
+        r = wintypes.RECT()
+        u.GetWindowRect(hwnd, ctypes.byref(r))
+        w, h = r.right - r.left, r.bottom - r.top
+        sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+        why = f"{w}x{h} on {sw}x{sh}"
+        if w == 0 or h == 0 or sw == 0:
+            time.sleep(0.4)
+            continue
+        if marker not in title.value:
+            return False, f"{why} -- abort: exam page is not the foreground window"
+        if w < sw * 0.97 or h < sh * 0.93:
+            return False, f"{why} -- abort: window is not maximised"
+        return True, why
+    return False, f"{why} -- abort: could not read the foreground window"
 
 
 def spiral(n: int) -> list[int]:

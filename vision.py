@@ -187,21 +187,8 @@ def is_empty(cell: np.ndarray) -> bool:
 
 
 def is_blank(cell: np.ndarray) -> bool:
-    """White decoy piece: *every* part of the cell is near white.
-
-    A plain "share of white pixels" test also fires on product photos shot on a
-    white background (desktop computer, cup): those have an object in the middle,
-    so the worst 4x3 block still contains plenty of non-white pixels. The decoy
-    piece has no content at all, so its worst block is white too.
-    """
-    g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
-    h, w = g.shape
-    worst = 1.0
-    for ry in range(3):
-        for rx in range(4):
-            block = g[ry * h // 3:(ry + 1) * h // 3, rx * w // 4:(rx + 1) * w // 4]
-            worst = min(worst, float((block > 200).mean()))
-    return worst >= BLANK_BLOCK_FRACTION
+    """Reference-panel blank cell: the whole thumbnail is white, centre included."""
+    return _centre_white(cell) >= 0.995
 
 
 BG_LEVEL = 18.0          # the tray background is (9, 9, 9); the border line is ~10-14
@@ -253,18 +240,24 @@ def is_real_piece(img: np.ndarray, box: tuple[int, int, int, int]) -> bool:
     return _bg_share(core) <= 0.25
 
 
-def is_white_piece(cell: np.ndarray) -> bool:
-    """White decoy *piece* in the tray.
+def _centre_white(cell: np.ndarray) -> float:
+    """Share of near-white pixels in the middle half of the cell."""
+    g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    h, w = g.shape
+    core = g[h // 4:3 * h // 4, w // 4:3 * w // 4]
+    return 0.0 if core.size == 0 else float((core > 190).mean())
 
-    The tray renders a piece with a thin dark rim and a soft shadow, so the
-    per-block test used for reference thumbnails can never pass; trimming 3 px and
-    looking at the share of near-white pixels separates the decoys (0.70-0.97)
-    from product photos that merely have white backgrounds (<=0.61 here).
+
+def is_white_piece(cell: np.ndarray) -> bool:
+    """White decoy piece: the *centre* is white, not just the background.
+
+    Measured on a real tray: the five decoys all score 1.00 on the middle half, while
+    product photos shot on white (desktop computer, cup, suitcase) score 0.02-0.70
+    because the object sits in the middle.  A plain "share of white pixels" test cannot
+    tell those apart -- it flagged 10 pieces where only 5 exist.
     """
-    g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)[3:-3, 3:-3]
-    if g.size == 0:
-        return False
-    return float((g > 190).mean()) >= WHITE_PIECE_FRACTION
+    return _centre_white(cell) >= 0.995
+
 
 
 class Classifier:
@@ -316,27 +309,8 @@ def find_reference(img: np.ndarray) -> Rect:
 
 def reference_grid(img: np.ndarray, n: int, clf: Classifier) -> list[str]:
     """Required class per board cell, row-major (index = row * n + col)."""
-    ref = layout(img)[0]
+    ref = find_reference(img)
     return [clf.label(sub(img, box))[0] for _r, _c, box in ref.cells(n)]
-
-
-def tray_cells(img: np.ndarray, clf: Classifier, n: int | None = None
-               ) -> list[tuple[str, str, int, int, str, tuple[int, int, int, int]]]:
-    """Every occupied tray piece: (band, label, row, col, key, box)."""
-    out = []
-    for band in ("left", "right"):
-        for ri, ci, box in tray_slots(img, band):
-            cell = sub(img, box)
-            if is_empty(cell):
-                continue
-            label, conf = clf.label(cell)
-            out.append((band, label, ri, ci, f"{band[0]}{ri + 1}{ci + 1}", box))
-    return out
-
-
-PIECE_AREA = 9520          # 112 x 85, the area of one tray piece
-
-
 def tray_pieces(img: np.ndarray) -> list[tuple[str, tuple[int, int, int, int]]]:
     """Locate tray pieces by connected components.
 

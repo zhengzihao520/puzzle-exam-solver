@@ -72,9 +72,10 @@ def read_table(img: np.ndarray, slots) -> list[dict]:
         if vision.is_empty(vision.sub(img, box)) or not vision.is_real_piece(img, box):
             continue
         flats = frozenset(s for s, k in vision.flat_sides(img, box).items() if k == "flat")
-        p = clf.probs(vision.sub(img, box))
-        out.append({"key": key, "box": box, "flats": flats,
-                    "label": str(clf.names[int(p.argmax())]), "probs": p})
+        cell_img = vision.sub(img, box)
+        p = clf.probs(cell_img)
+        label = "blank" if vision.is_white_piece(cell_img) else str(clf.names[int(p.argmax())])
+        out.append({"key": key, "box": box, "flats": flats, "label": label, "probs": p})
     return out, clf
 
 
@@ -136,7 +137,10 @@ def place_piece(mouse: Mouse, piece_box, cell_box, offset: tuple[int, int], base
     mouse.grab_at(src)
     mouse.glide((src[0] + 14, src[1] + 8))
     time.sleep(mouse.settle)
-    for dx, dy in [(0, 0), (-4, 0), (4, 0), (0, -4), (0, 4), (-8, 0), (8, 0), (0, -8), (0, 8)]:
+    steps = [(0, 0), (-5, 0), (5, 0), (0, -5), (0, 5), (-5, -5), (5, -5), (-5, 5), (5, 5),
+             (0, -11), (0, 11), (-11, 0), (11, 0), (-11, -11), (11, -11), (-11, 11), (11, 11),
+             (0, -17), (0, 17), (-17, 0), (17, 0)]
+    for dx, dy in steps:
         mouse.glide((dst[0] + ox + dx, dst[1] + oy + dy))
         time.sleep(mouse.settle)
         if is_locked(mouse, cell_box, base):
@@ -223,7 +227,7 @@ def main() -> int:
     time.sleep(4)
     mouse = Mouse()
     placed = 0
-    offset: tuple[int, int] | None = None
+    offset: tuple[int, int] = (0, 0)
     for step in plan:
         if args.moves and placed >= args.moves:
             break
@@ -234,14 +238,6 @@ def main() -> int:
             label = f"cell({step['r'] + 1},{step['c'] + 1}) want {step['want']:9s} try {cand['key']} {cand['label']}"
             print(label, flush=True)
             base = measure(mouse, cell_box)
-            if offset is None:
-                got = calibrate(mouse, cand["box"], cell_box, base)
-                if got is None:
-                    continue
-                offset = got
-                placed += 1
-                remaining = [p for p in remaining if p is not cand]
-                break
             if place_piece(mouse, cand["box"], cell_box, offset, base):
                 print("   locked in")
                 placed += 1
