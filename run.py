@@ -203,7 +203,7 @@ def check_foreground(marker: str = "Edge") -> tuple[bool, str]:
     if marker not in title.value:
         return False, f"{title.value!r} {w}x{h} -- abort: the exam page is not the foreground window"
     sw, sh = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
-    if w < sw * 0.97 or h < sh * 0.97:
+    if w < sw * 0.97 or h < sh * 0.93:
         return False, (f"{title.value!r} {w}x{h} on a {sw}x{sh} screen -- abort: "
                        f"the window is not maximised, the layout would be wrong")
     return True, f"{title.value!r} {w}x{h}"

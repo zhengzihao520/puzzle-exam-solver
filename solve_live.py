@@ -61,7 +61,7 @@ def check_foreground(marker: str = "Edge") -> tuple[bool, str]:
     sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
     if marker not in title.value:
         return False, f"{w}x{h} on {sw}x{sh} -- abort: exam page is not foreground"
-    if w < sw * 0.97 or h < sh * 0.97:
+    if w < sw * 0.97 or h < sh * 0.93:
         return False, f"{w}x{h} on {sw}x{sh} -- abort: window is not maximised"
     return True, f"{w}x{h} on {sw}x{sh}"
 

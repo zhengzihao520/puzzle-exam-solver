@@ -78,6 +78,64 @@ def read_table(img: np.ndarray, slots) -> list[dict]:
     return out, clf
 
 
+SWEEP = [(0, 0)] + [(dx, dy) for r in (6, 12, 18) for dx in (-r, 0, r) for dy in (-r, 0, r)
+                     if not (dx == 0 and dy == 0)]
+
+
+def snapped(mouse: Mouse, cell_box) -> bool:
+    """Locked = the piece stops following the cursor, so the cell keeps its brightness.
+
+    Brightness alone cannot be used: an empty cell under the pointer shows a hover
+    highlight of 50-90, which is brighter than the 48 threshold that once produced false
+    'locked in' reports.  Compare the cell before and after pulling the pointer away.
+    """
+    dst = centre(cell_box)
+    before = cell_mean(mouse.shot(), cell_box)
+    mouse.glide((dst[0] + 22, dst[1] + 10))
+    time.sleep(mouse.settle * 1.5)
+    after = cell_mean(mouse.shot(), cell_box)
+    mouse.glide(dst)
+    time.sleep(mouse.settle)
+    return before >= vision.BOARD_FILLED_LEVEL and abs(after - before) < 15
+
+
+def calibrate(mouse: Mouse, piece_box, cell_box) -> tuple[int, int] | None:
+    """Measure the systematic grab->drop offset with one piece on one cell."""
+    src, dst = centre(piece_box), centre(cell_box)
+    mouse.grab_at(src)
+    mouse.glide((src[0] + 14, src[1] + 8))
+    time.sleep(mouse.settle)
+    for dx, dy in SWEEP:
+        mouse.glide((dst[0] + dx, dst[1] + dy))
+        time.sleep(mouse.settle * 1.5)
+        if snapped(mouse, cell_box):
+            mouse.release()
+            print(f"   calibration: snaps at offset ({dx:+d},{dy:+d})")
+            return dx, dy
+    mouse.glide(src)
+    mouse.release()
+    print("   calibration failed: no offset snapped")
+    return None
+
+
+def place_piece(mouse: Mouse, piece_box, cell_box, offset: tuple[int, int]) -> bool:
+    """Grab, aim with the calibrated offset, close the last pixels, verify with a pull."""
+    src, dst = centre(piece_box), centre(cell_box)
+    ox, oy = offset
+    mouse.grab_at(src)
+    mouse.glide((src[0] + 14, src[1] + 8))
+    time.sleep(mouse.settle)
+    for dx, dy in [(0, 0), (-4, 0), (4, 0), (0, -4), (0, 4), (-8, 0), (8, 0), (0, -8), (0, 8)]:
+        mouse.glide((dst[0] + ox + dx, dst[1] + oy + dy))
+        time.sleep(mouse.settle * 1.5)
+        if snapped(mouse, cell_box):
+            mouse.release()
+            return True
+    mouse.glide(src)
+    mouse.release()
+    return False
+
+
 def main() -> int:
     _enable_dpi()
     ap = argparse.ArgumentParser()
@@ -154,6 +212,7 @@ def main() -> int:
     time.sleep(4)
     mouse = Mouse()
     placed = 0
+    offset: tuple[int, int] | None = None
     for step in plan:
         if args.moves and placed >= args.moves:
             break
@@ -161,9 +220,17 @@ def main() -> int:
         if cell_mean(vision.grab(), cell_box) >= vision.BOARD_FILLED_LEVEL:
             continue
         for cand in step["cands"]:
-            print(f"cell({step['r'] + 1},{step['c'] + 1}) want {step['want']:9s} "
-                  f"try {cand['key']} {cand['label']}", flush=True)
-            if attempt(mouse, cand["box"], cell_box):
+            label = f"cell({step['r'] + 1},{step['c'] + 1}) want {step['want']:9s} try {cand['key']} {cand['label']}"
+            print(label, flush=True)
+            if offset is None:
+                got = calibrate(mouse, cand["box"], cell_box)
+                if got is None:
+                    continue
+                offset = got
+                placed += 1
+                remaining = [p for p in remaining if p is not cand]
+                break
+            if place_piece(mouse, cand["box"], cell_box, offset):
                 print("   locked in")
                 placed += 1
                 remaining = [p for p in remaining if p is not cand]
