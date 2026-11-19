@@ -204,6 +204,55 @@ def is_blank(cell: np.ndarray) -> bool:
     return worst >= BLANK_BLOCK_FRACTION
 
 
+BG_LEVEL = 18.0          # the tray background is (9, 9, 9); the border line is ~10-14
+
+
+def _bg_share(a: np.ndarray) -> float:
+    return 0.0 if a.size == 0 else float((a < BG_LEVEL).mean())
+
+
+def flat_sides(img: np.ndarray, box: tuple[int, int, int, int]) -> dict[str, str]:
+    """Per side: 'flat' (straight frame edge), 'tab' (protruding), 'notch' (carved in).
+
+    The site cuts real jigsaw pieces (PieceCutter: tabSize = 0.22*min(w,h), margin =
+    1.5*tabSize), so a piece on the board frame has a straight side there.  Measured
+    from the tray: a tab shows content 3-13 px *outside* the body, a notch shows pure
+    tray background 3-12 px *inside* it, and a flat side shows neither.  Decision is by
+    share of background pixels, not brightness: the piece carries a photo, which may be
+    darker than the tray itself.
+    """
+    x, y, w, h = box
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    x1, x2 = x + w // 3, x + 2 * w // 3
+    y1, y2 = y + h // 3, y + 2 * h // 3
+
+    def kind(inner_bg: float, outer_bg: float) -> str:
+        if inner_bg > 0.5:
+            return "notch"
+        if outer_bg < 0.5:
+            return "tab"
+        return "flat"
+
+    return {
+        "top": kind(_bg_share(g[y + 3:y + 12, x1:x2]),
+                    _bg_share(g[max(0, y - 13):y - 3, x1:x2])),
+        "bottom": kind(_bg_share(g[y + h - 12:y + h - 3, x1:x2]),
+                       _bg_share(g[y + h + 3:y + h + 13, x1:x2])),
+        "left": kind(_bg_share(g[y1:y2, x + 3:x + 12]),
+                     _bg_share(g[y1:y2, max(0, x - 13):x - 3])),
+        "right": kind(_bg_share(g[y1:y2, x + w - 12:x + w - 3]),
+                      _bg_share(g[y1:y2, x + w + 3:x + w + 13])),
+    }
+
+
+def is_real_piece(img: np.ndarray, box: tuple[int, int, int, int]) -> bool:
+    """Reject slot boxes that are really a neighbour's tab bleeding over the gap."""
+    x, y, w, h = box
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    core = g[y + h // 4:y + 3 * h // 4, x + w // 4:x + 3 * w // 4]
+    return _bg_share(core) <= 0.25
+
+
 def is_white_piece(cell: np.ndarray) -> bool:
     """White decoy *piece* in the tray.
 
