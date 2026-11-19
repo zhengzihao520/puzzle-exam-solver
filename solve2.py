@@ -82,24 +82,35 @@ SWEEP = [(0, 0)] + [(dx, dy) for r in (6, 12, 18) for dx in (-r, 0, r) for dy in
                      if not (dx == 0 and dy == 0)]
 
 
-def snapped(mouse: Mouse, cell_box) -> bool:
-    """Locked = the piece stops following the cursor, so the cell keeps its brightness.
+NEUTRAL = (960, 1030)          # far from the board: no hover highlight while measuring
 
-    Brightness alone cannot be used: an empty cell under the pointer shows a hover
-    highlight of 50-90, which is brighter than the 48 threshold that once produced false
-    'locked in' reports.  Compare the cell before and after pulling the pointer away.
+
+def cell_stats(img, box):
+    g = cv2.cvtColor(vision.sub(img, box), cv2.COLOR_BGR2GRAY)
+    return float(g.mean()), float(g.std())
+
+
+def measure(mouse: Mouse, cell_box) -> tuple[float, float]:
+    """Cell (mean, std) with the pointer parked away, so no hover tint is mixed in."""
+    mouse.gui.moveTo(*NEUTRAL, duration=0.1)
+    time.sleep(0.12)
+    return cell_stats(mouse.shot(), cell_box)
+
+
+def is_locked(mouse: Mouse, cell_box, empty_stats) -> bool:
+    """Locked when the cell no longer looks like the empty hole it was before the drop.
+
+    Measured: an empty cell is mean 25 / std 16; a cell holding a piece -- even a very
+    dark one -- keeps std >= 30 because of the piece's tabs and outline; a hovered empty
+    cell is worse still (mean 70-90, std 70-95) because the neighbours' tabs show through.
+    Comparing against the pre-drop baseline with the pointer parked away avoids all of that.
     """
-    dst = centre(cell_box)
-    before = cell_mean(mouse.shot(), cell_box)
-    mouse.glide((dst[0] + 22, dst[1] + 10))
-    time.sleep(mouse.settle * 1.5)
-    after = cell_mean(mouse.shot(), cell_box)
-    mouse.glide(dst)
-    time.sleep(mouse.settle)
-    return before >= vision.BOARD_FILLED_LEVEL and abs(after - before) < 15
+    mean, std = measure(mouse, cell_box)
+    base_mean, base_std = empty_stats
+    return abs(mean - base_mean) > 15 or abs(std - base_std) > 12
 
 
-def calibrate(mouse: Mouse, piece_box, cell_box) -> tuple[int, int] | None:
+def calibrate(mouse: Mouse, piece_box, cell_box, base) -> tuple[int, int] | None:
     """Measure the systematic grab->drop offset with one piece on one cell."""
     src, dst = centre(piece_box), centre(cell_box)
     mouse.grab_at(src)
@@ -107,8 +118,8 @@ def calibrate(mouse: Mouse, piece_box, cell_box) -> tuple[int, int] | None:
     time.sleep(mouse.settle)
     for dx, dy in SWEEP:
         mouse.glide((dst[0] + dx, dst[1] + dy))
-        time.sleep(mouse.settle * 1.5)
-        if snapped(mouse, cell_box):
+        time.sleep(mouse.settle)
+        if is_locked(mouse, cell_box, base):
             mouse.release()
             print(f"   calibration: snaps at offset ({dx:+d},{dy:+d})")
             return dx, dy
@@ -118,7 +129,7 @@ def calibrate(mouse: Mouse, piece_box, cell_box) -> tuple[int, int] | None:
     return None
 
 
-def place_piece(mouse: Mouse, piece_box, cell_box, offset: tuple[int, int]) -> bool:
+def place_piece(mouse: Mouse, piece_box, cell_box, offset: tuple[int, int], base) -> bool:
     """Grab, aim with the calibrated offset, close the last pixels, verify with a pull."""
     src, dst = centre(piece_box), centre(cell_box)
     ox, oy = offset
@@ -127,8 +138,8 @@ def place_piece(mouse: Mouse, piece_box, cell_box, offset: tuple[int, int]) -> b
     time.sleep(mouse.settle)
     for dx, dy in [(0, 0), (-4, 0), (4, 0), (0, -4), (0, 4), (-8, 0), (8, 0), (0, -8), (0, 8)]:
         mouse.glide((dst[0] + ox + dx, dst[1] + oy + dy))
-        time.sleep(mouse.settle * 1.5)
-        if snapped(mouse, cell_box):
+        time.sleep(mouse.settle)
+        if is_locked(mouse, cell_box, base):
             mouse.release()
             return True
     mouse.glide(src)
@@ -222,15 +233,16 @@ def main() -> int:
         for cand in step["cands"]:
             label = f"cell({step['r'] + 1},{step['c'] + 1}) want {step['want']:9s} try {cand['key']} {cand['label']}"
             print(label, flush=True)
+            base = measure(mouse, cell_box)
             if offset is None:
-                got = calibrate(mouse, cand["box"], cell_box)
+                got = calibrate(mouse, cand["box"], cell_box, base)
                 if got is None:
                     continue
                 offset = got
                 placed += 1
                 remaining = [p for p in remaining if p is not cand]
                 break
-            if place_piece(mouse, cand["box"], cell_box, offset):
+            if place_piece(mouse, cand["box"], cell_box, offset, base):
                 print("   locked in")
                 placed += 1
                 remaining = [p for p in remaining if p is not cand]
