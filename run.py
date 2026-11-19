@@ -1,4 +1,4 @@
-"""Live runner: drags planned pieces onto the board with real mouse events.
+﻿"""Live runner: drags planned pieces onto the board with real mouse events.
 
 Usage:
   python run.py --dry               print the moves, touch nothing
@@ -159,36 +159,26 @@ class Mouse:
     _first: np.ndarray | None = None
 
 
-def ensure_foreground(marker: str = "拼图") -> bool:
-    """Bring the exam tab to the front so screenshots and drags hit the page."""
+FULL_W, FULL_H = 1750, 950          # a real fullscreen page on the 1920x1080 screen
+
+
+def check_foreground(marker: str = "鎷煎浘") -> tuple[bool, str]:
+    """Only look, never switch: the page must already be the maximised foreground window."""
     import ctypes
     from ctypes import wintypes
     user32 = ctypes.windll.user32
-    found = []
-
-    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    def cb(hwnd, _lparam):
-        if not user32.IsWindowVisible(hwnd):
-            return True
-        buf = ctypes.create_unicode_buffer(512)
-        user32.GetWindowTextW(hwnd, buf, 512)
-        if marker in buf.value:
-            found.append(hwnd)
-        return True
-
-    user32.EnumWindows(cb, 0)
-    if not found:
-        return False
-    hwnd = found[0]
-    user32.ShowWindow(hwnd, 9)          # SW_RESTORE
-    user32.SetForegroundWindow(hwnd)
-    time.sleep(0.6)
-    fg = user32.GetForegroundWindow()
+    hwnd = user32.GetForegroundWindow()
     title = ctypes.create_unicode_buffer(512)
-    user32.GetWindowTextW(fg, title, 512)
-    print(f"foreground now: {title.value!r}")
-    return marker in title.value
-
+    user32.GetWindowTextW(hwnd, title, 512)
+    rect = wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    w, h = rect.right - rect.left, rect.bottom - rect.top
+    if marker not in title.value:
+        return False, f"{title.value!r} {w}x{h} -- abort: the exam page is not in the foreground"
+    if w < FULL_W or h < FULL_H:
+        return False, (f"{title.value!r} {w}x{h} -- abort: the window is not fullscreen, "
+                       f"the layout would be wrong")
+    return True, f"{title.value!r} {w}x{h}"
 
 def centre(box: tuple[int, int, int, int]) -> tuple[int, int]:
     return box[0] + box[2] // 2, box[1] + box[3] // 2
@@ -203,9 +193,11 @@ def main() -> int:
     args = ap.parse_args()
 
     clf = vision.Classifier()
-    if not args.shot and not ensure_foreground():
-        print("abort: the exam page window was not found / could not be focused")
-        return 2
+    if not args.shot:
+        ok, why = check_foreground()
+        print(f"foreground: {why}")
+        if not ok:
+            return 2
     if args.shot:
         img = cv2.imread(args.shot)
         if img is None:
@@ -230,15 +222,6 @@ def main() -> int:
               f"({m['target'][0]:4d},{m['target'][1]:4d})")
     if args.dry or not plan:
         return 0
-
-    import ctypes
-    hw = ctypes.windll.user32.GetForegroundWindow()
-    title = ctypes.create_unicode_buffer(512)
-    ctypes.windll.user32.GetWindowTextW(hw, title, 512)
-    print(f"foreground: {title.value!r}")
-    if "Edge" not in title.value:
-        print("abort: the exam page is not in the foreground")
-        return 2
 
     print("\nstarting in 4s -- move the pointer into a screen corner to abort")
     time.sleep(4)
@@ -295,3 +278,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
