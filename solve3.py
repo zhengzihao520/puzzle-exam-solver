@@ -54,7 +54,7 @@ def cell_mean(img, box) -> float:
     return float(cv2.cvtColor(vision.sub(img, box), cv2.COLOR_BGR2GRAY).mean())
 
 
-def attempt(mouse: Mouse, piece_box, cell_box, slot_centre) -> str:
+def attempt(mouse: Mouse, piece_box, cell_box, slot_centre, tick=frozenset()) -> str:
     """Drag a candidate to the cell and let the progress counter judge it.
 
     Returns 'ok' (piece belongs there), 'returned' (dragged back to its slot) or
@@ -74,7 +74,7 @@ def attempt(mouse: Mouse, piece_box, cell_box, slot_centre) -> str:
     # the counter updates with a short delay: poll instead of reading once
     for _wait in range(10):
         time.sleep(0.3)
-        if not vision.progress_same(before, vision.progress_crop(vision.grab())):
+        if vision.progress_changed(before, vision.progress_crop(vision.grab()), tick):
             return "ok"
 
     # no progress: the piece is only lying there -> put it back
@@ -93,8 +93,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--moves", type=int, default=0)
+    ap.add_argument("--delay", type=float, default=0.0,
+                    help="seconds to wait before touching anything (time to focus the page)")
     args = ap.parse_args()
 
+    if args.delay:
+        print(f"waiting {args.delay:.0f}s for you to focus the exam page ...", flush=True)
+        time.sleep(args.delay)
     ok, why = check_foreground()
     print(f"foreground: {why}")
     if not ok and not args.dry:
@@ -104,38 +109,68 @@ def main() -> int:
     img = vision.grab()
     cv2.imwrite(str(vision.ROOT / "shots" / "solve3_start.png"), img)
     ref, board, _ = vision.layout(img)
-    print(f"progress box: {vision.progress_box(img)}")
+    pbox = vision.progress_box(img)
+    pcrop = vision.progress_crop(img)
+    ink = int((pcrop > 100).sum())
+    contrast = float(pcrop.std())
+    print(f"progress box: {pbox}, ink {ink}, contrast {contrast:.1f}")
+    if ink < 120 and contrast < 4.0:
+        print("ABORT: the progress text is not inside the crop (ink %d). The page layout "
+              "moved -- scroll to the top and make sure the counter is visible." % ink)
+        return 4
+    idle_a = vision.progress_crop(vision.grab())
+    time.sleep(2.5)
+    idle_b = vision.progress_crop(vision.grab())
+    tick = vision.ticking_columns(idle_a, idle_b)
+    print(f"ticking columns masked: {len(tick)}")
 
-    need = []
+    need, ref_probs = [], []
     for cell in [vision.sub(img, b) for _r, _c, b in ref.cells(N)]:
-        need.append("blank" if vision.is_blank(cell) else
-                    str(clf.names[int(clf.probs(cell).argmax())]))
+        if vision.is_blank(cell):
+            need.append("blank")
+            ref_probs.append(None)
+        else:
+            p = clf.probs(cell)
+            ref_probs.append(p)
+            need.append(str(clf.names[int(p.argmax())]))
     rows = vision.tray_rows(img)
+    boxes = [(f"{band[0]}{ri + 1}{ci + 1}", box)
+             for band in ("left", "right")
+             for ri, ci, box in vision.tray_slots(img, band, rows)]
+    if len([b for _k, b in boxes if not vision.is_empty(vision.sub(img, b))]) < 6:
+        # the tray is nearly empty and the pieces are no longer on the grid: locate them by
+        # connected components instead (a blob that holds two touching pieces is split)
+        boxes = [(f"p{i}", box) for i, (_band, box) in enumerate(vision.tray_pieces(img))]
+        print(f"tray off-grid -> {len(boxes)} pieces located by connected components")
     pieces = []
-    for band in ("left", "right"):
-        for ri, ci, box in vision.tray_slots(img, band, rows):
-            cell = vision.sub(img, box)
-            if vision.is_empty(cell) or not vision.is_real_piece(img, box):
-                continue
+    for key, box in boxes:
+        cell = vision.sub(img, box)
+        if vision.is_empty(cell) or not vision.is_real_piece(img, box):
+            continue
             p = clf.probs(cell)
             label = "blank" if vision.is_white_piece(cell) else str(clf.names[int(p.argmax())])
-            pieces.append({"key": f"{band[0]}{ri + 1}{ci + 1}", "box": box,
-                           "label": label, "probs": p})
+            pieces.append({"key": key, "box": box, "label": label, "probs": p})
     filled = vision.board_filled(img, N)
     rows_now = len(rows)
     print(f"board {sum(filled)}/{N * N}, pieces {len(pieces)}, tray rows {rows_now}")
-    if rows_now < 4 or len(pieces) < 18:
-        print("ABORT: the tray is not fully on screen (page scrolled?), "
-              "scroll so the whole tray is visible and rerun")
+    if len(pieces) + sum(filled) < 20:
+        print(f"ABORT: only {len(pieces) + sum(filled)} pieces accounted for on the whole "
+              f"screen (tray {len(pieces)} + board {sum(filled)}); the page is probably "
+              f"scrolled or pieces were dropped outside the tray")
         return 3
 
     order = [i for i in spiral(N) if not filled[i]]
     plan = []
     for idx in order:
         want = need[idx]
+        rp = ref_probs[idx]
         same = [p for p in pieces if p["label"] == want]
         others = [p for p in pieces if p["label"] != want]
-        plan.append({"idx": idx, "want": want, "cands": same + others[:2]})
+        if rp is not None:
+            others.sort(key=lambda p: -float(np.dot(p["probs"], rp)))
+        # same class first, then everything else by similarity: the counter decides, so a
+        # wider net costs one drag per wrong guess and never leaves a piece on the board
+        plan.append({"idx": idx, "want": want, "cands": same + others})
     print(f"plan: {len(plan)} cells")
     if args.dry:
         for s in plan:
@@ -159,7 +194,7 @@ def main() -> int:
                 continue
             print(f"cell({idx // N + 1},{idx % N + 1}) want {step['want']:9s} "
                   f"try {cand['key']} {cand['label']}", flush=True)
-            verdict = attempt(mouse, cand["box"], cell_box, centre(cand["box"]))
+            verdict = attempt(mouse, cand["box"], cell_box, centre(cand["box"]), tick)
             if verdict == "ok":
                 print("   progress moved -> placed")
                 done += 1

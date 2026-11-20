@@ -320,6 +320,9 @@ def reference_grid(img: np.ndarray, n: int, clf: Classifier) -> list[str]:
     """Required class per board cell, row-major (index = row * n + col)."""
     ref = find_reference(img)
     return [clf.label(sub(img, box))[0] for _r, _c, box in ref.cells(n)]
+PIECE_AREA = 9520          # 112 x 85, the area of one tray piece
+
+
 def tray_pieces(img: np.ndarray) -> list[tuple[str, tuple[int, int, int, int]]]:
     """Locate tray pieces by connected components.
 
@@ -367,7 +370,7 @@ def board_filled(img: np.ndarray, n: int) -> list[bool]:
 # ---- progress counter: the only authoritative success signal -----------------
 # "进度: k/N" sits just above the reference panel; k increases exactly once per piece
 # that is dropped on its own cell, so a change in this crop *is* the verdict.
-PROGRESS_REL = (105, -292, 250, 60)      # relative to the reference panel origin
+PROGRESS_REL = (-235, -292, 470, 44)     # the whole "进度: k/N" text row, relative to the reference panel
 
 
 def progress_box(img: np.ndarray) -> tuple[int, int, int, int]:
@@ -383,16 +386,27 @@ def progress_crop(img: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(sub(img, progress_box(img)), cv2.COLOR_BGR2GRAY)
 
 
-def progress_same(a: np.ndarray, b: np.ndarray, changed: int = 12) -> bool:
-    """Compare two counter crops by the number of clearly changed pixels.
+def ticking_columns(a: np.ndarray, b: np.ndarray, thresh: int = 30) -> set[int]:
+    """Columns that change on their own (the running timer sits on the same text row)."""
+    if a.shape != b.shape:
+        return set()
+    cols = (cv2.absdiff(a, b) > 40).any(axis=0)
+    return set(np.nonzero(cols)[0].tolist())
 
-    Idle frames differ by ~3 pixels; a digit swap moves tens of them, so a pixel count
-    is far more sensitive than the mean absolute difference of a 250x60 strip (which is
-    diluted by the bar background and cannot see a single digit).
+
+def progress_changed(a: np.ndarray, b: np.ndarray, ignore: set[int], thresh: int = 8) -> bool:
+    """True when something other than the ticking columns changed.
+
+    The counter shares its row with a live timer, so raw frame comparison always reports a
+    change.  Columns that move while the page is idle are masked out first, and what is
+    left is the "进度: k/N" text.
     """
     if a.shape != b.shape:
         return False
-    return int((cv2.absdiff(a, b) > 40).sum()) < changed
+    d = cv2.absdiff(a, b) > 40
+    if ignore:
+        d[:, sorted(ignore)] = False
+    return int(d.sum()) > thresh
 
 
 def read_progress(img: np.ndarray) -> str:
