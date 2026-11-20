@@ -83,7 +83,7 @@ SWEEP = [(0, 0)] + [(dx, dy) for r in (6, 12, 18) for dx in (-r, 0, r) for dy in
                      if not (dx == 0 and dy == 0)]
 
 
-NEUTRAL = (960, 1030)          # far from the board: no hover highlight while measuring
+PARK_DY = 100                  # clears the cell completely (piece is 85 px tall) with a short trip
 
 
 def cell_stats(img, box):
@@ -91,10 +91,15 @@ def cell_stats(img, box):
     return float(g.mean()), float(g.std())
 
 
+def park_point(cell_box) -> tuple[int, int]:
+    cx, cy = centre(cell_box)
+    return cx, cy + PARK_DY
+
+
 def measure(mouse: Mouse, cell_box) -> tuple[float, float]:
-    """Cell (mean, std) with the pointer parked away, so no hover tint is mixed in."""
-    mouse.gui.moveTo(*NEUTRAL, duration=0.1)
-    time.sleep(0.12)
+    """Cell (mean, std) with the pointer parked just below it, so no hover tint is mixed in."""
+    mouse.gui.moveTo(*park_point(cell_box), duration=0.08)
+    time.sleep(0.1)
     return cell_stats(mouse.shot(), cell_box)
 
 
@@ -137,9 +142,8 @@ def place_piece(mouse: Mouse, piece_box, cell_box, offset: tuple[int, int], base
     mouse.grab_at(src)
     mouse.glide((src[0] + 14, src[1] + 8))
     time.sleep(mouse.settle)
-    steps = [(0, 0), (-5, 0), (5, 0), (0, -5), (0, 5), (-5, -5), (5, -5), (-5, 5), (5, 5),
-             (0, -11), (0, 11), (-11, 0), (11, 0), (-11, -11), (11, -11), (-11, 11), (11, 11),
-             (0, -17), (0, 17), (-17, 0), (17, 0)]
+    steps = [(0, 0), (0, -8), (0, 8), (-8, 0), (8, 0), (-8, -8), (8, -8), (-8, 8), (8, 8),
+             (0, -15), (0, 15), (-15, 0), (15, 0)]
     for dx, dy in steps:
         mouse.glide((dst[0] + ox + dx, dst[1] + oy + dy))
         time.sleep(mouse.settle)
