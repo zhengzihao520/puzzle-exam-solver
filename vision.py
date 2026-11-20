@@ -155,7 +155,16 @@ def tray_rows(img: np.ndarray) -> list[tuple[int, int]]:
 
 
 def tray_cols(img: np.ndarray, band: str) -> list[tuple[int, int]]:
+    """Column spans, measured only over the rows that actually hold pieces.
+
+    Using the whole band region breaks as soon as the upper rows are empty: every column
+    then looks mostly dark and no gap is ever found.  Restricting to the detected row span
+    keeps the column profile meaningful while the tray empties out.
+    """
     x0, x1, y0, y1 = tray_region(img, band)
+    rows = tray_rows(img)
+    if rows:
+        y0, y1 = rows[0][0], rows[-1][1]
     g = cv2.cvtColor(img[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY).astype(np.float32)
     return _keep_regular(_spans(_gap_runs(_dark_frac(g).mean(axis=0)), x0))
 
