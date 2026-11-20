@@ -34,7 +34,7 @@ N = 5
 SIDES = ("top", "bottom", "left", "right")
 OPPOSITE = {"top": "bottom", "bottom": "top", "left": "right", "right": "left"}
 SIG_FILE = ROOT / "logs" / "piece_shapes.json"
-PARK = (760, 985)                # empty canvas below the board, verified at run time
+PARK = (560, 620)          # empty board area: the only large flat dark region on screen                # empty canvas below the board, verified at run time
 BODY_W, BODY_H = 106, 84
 
 
@@ -48,60 +48,84 @@ def tray_slots_from_full(shot: Path) -> list[tuple[str, tuple[int, int, int, int
     return out
 
 
-def side_of(mask: np.ndarray, side: str, body: tuple[int, int]) -> str:
-    """flat / tab / notch for one side of an isolated piece silhouette.
+def sides_from_mask(mask: np.ndarray) -> dict[str, str]:
+    """flat / tab / notch per side, using the silhouette itself as the reference.
 
-    mask == 1 means "piece pixel".  A tab shows piece pixels *outside* the body edge in
-    the middle third of that side; a notch shows background *inside* it; a flat side
-    shows neither.
+    The body edge is the *median* of the silhouette extreme along that side: a tab or a
+    notch only occupies the middle third, so the median still lands on the straight body
+    edge.  A protrusion of more than 10 px beyond it is a tab, a carve-in of more than
+    10 px is a notch, and otherwise the side is flat.
     """
-    h, w = mask.shape
-    bw, bh = body
-    x0, y0 = int((w - bw) / 2), int((h - bh) / 2)
-    x1, y1 = x0 + bw, y0 + bh
-    strip = 12
-    mid_x = slice(x0 + bw // 3, x0 + 2 * bw // 3)
-    mid_y = slice(y0 + bh // 3, y0 + 2 * bh // 3)
-    if side == "top":
-        outside = mask[max(0, y0 - strip):y0, mid_x]
-        inside = mask[y0:y0 + strip, mid_x]
-    elif side == "bottom":
-        outside = mask[y1:min(h, y1 + strip), mid_x]
-        inside = mask[max(0, y1 - strip):y1, mid_x]
-    elif side == "left":
-        outside = mask[mid_y, max(0, x0 - strip):x0]
-        inside = mask[mid_y, x0:x0 + strip]
-    else:
-        outside = mask[mid_y, x1:min(w, x1 + strip)]
-        inside = mask[mid_y, max(0, x1 - strip):x1]
-    piece_out = float(np.asarray(outside, float).mean()) if outside.size else 0.0
-    piece_in = float(np.asarray(inside, float).mean()) if inside.size else 1.0
-    if piece_out > 0.5:
-        return "tab"
-    if piece_in < 0.5:
-        return "notch"
-    return "flat"
+    ys, xs = np.nonzero(mask)
+    if len(xs) < 500:
+        return {s: "flat" for s in SIDES}
+    x0, x1, y0, y1 = int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max())
+    out = {}
+    for side in SIDES:
+        prof = []
+        if side in ("top", "bottom"):
+            for x in range(x0, x1 + 1):
+                idx = np.nonzero(mask[:, x])[0]
+                if idx.size == 0:
+                    continue
+                prof.append(idx.min() if side == "top" else idx.max())
+        else:
+            for y in range(y0, y1 + 1):
+                idx = np.nonzero(mask[y, :])[0]
+                if idx.size == 0:
+                    continue
+                prof.append(idx.min() if side == "left" else idx.max())
+        if len(prof) < 20:
+            out[side] = "flat"
+            continue
+        prof = np.array(prof, dtype=float)
+        body = float(np.median(prof))
+        if side in ("top", "left"):
+            out[side] = "tab" if prof.min() < body - 10 else (
+                "notch" if prof.max() > body + 10 else "flat")
+        else:
+            out[side] = "tab" if prof.max() > body + 10 else (
+                "notch" if prof.min() < body - 10 else "flat")
+    return out
+
+
+PARK_LEVEL = 25          # the empty canvas below the board reads 8-12
 
 
 def silhouette(shot: np.ndarray, centre_pt: tuple[int, int],
-               half: tuple[int, int] = (BODY_W // 2 + 24, BODY_H // 2 + 24)) -> np.ndarray:
+               half: tuple[int, int] = (96, 84)) -> np.ndarray:
+    """Binary piece mask in a window big enough for the body plus 18 px tabs."""
     hw, hh = half
     x0, y0 = max(0, centre_pt[0] - hw), max(0, centre_pt[1] - hh)
     win = cv2.cvtColor(shot[y0:centre_pt[1] + hh, x0:centre_pt[0] + hw],
                        cv2.COLOR_BGR2GRAY).astype(np.float32)
-    bg = float(np.median(win))
-    return (win > bg + 18).astype(np.uint8)
+    mask = (win > PARK_LEVEL).astype(np.uint8)
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
 
 
 def measure(mouse: Mouse, box) -> dict[str, str] | None:
     """Lift one piece over the empty canvas and read its four sides there."""
     src = (box[0] + box[2] // 2, box[1] + box[3] // 2)
-    mouse.grab_at(src)
+    before = float(cv2.cvtColor(vision.sub(mouse.shot(), box), cv2.COLOR_BGR2GRAY).mean())
+    picked = False
+    for _attempt in range(2):
+        mouse.grab_at(src)
+        mouse.glide((src[0] + 18, src[1] + 12))      # tug: the slot must change
+        time.sleep(mouse.settle)
+        after = float(cv2.cvtColor(vision.sub(mouse.shot(), box), cv2.COLOR_BGR2GRAY).mean())
+        if abs(after - before) > 12:
+            picked = True
+            break
+        mouse.release()
+        time.sleep(mouse.settle)
+    if not picked:
+        mouse.release()
+        return None
     mouse.glide(PARK)
     time.sleep(mouse.settle * 2)
     shot = mouse.shot()
     mask = silhouette(shot, PARK)
-    sig = {s: side_of(mask, s, (BODY_W, BODY_H)) for s in SIDES}
+    sig = sides_from_mask(mask)
     mouse.glide(src)
     mouse.release()
     return sig
