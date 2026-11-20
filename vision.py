@@ -374,10 +374,16 @@ def progress_crop(img: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(sub(img, progress_box(img)), cv2.COLOR_BGR2GRAY)
 
 
-def progress_same(a: np.ndarray, b: np.ndarray, tol: float = 1.5) -> bool:
+def progress_same(a: np.ndarray, b: np.ndarray, changed: int = 12) -> bool:
+    """Compare two counter crops by the number of clearly changed pixels.
+
+    Idle frames differ by ~3 pixels; a digit swap moves tens of them, so a pixel count
+    is far more sensitive than the mean absolute difference of a 250x60 strip (which is
+    diluted by the bar background and cannot see a single digit).
+    """
     if a.shape != b.shape:
         return False
-    return float(cv2.absdiff(a, b).mean()) < tol
+    return int((cv2.absdiff(a, b) > 40).sum()) < changed
 
 
 def read_progress(img: np.ndarray) -> str:

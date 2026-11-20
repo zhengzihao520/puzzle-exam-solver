@@ -71,11 +71,11 @@ def attempt(mouse: Mouse, piece_box, cell_box, slot_centre) -> str:
         mouse.glide((dst[0] + dx, dst[1] + dy))
         time.sleep(mouse.settle)
     mouse.release()
-    time.sleep(0.25)
-
-    after_img = vision.grab()
-    if not vision.progress_same(before, vision.progress_crop(after_img)):
-        return "ok"
+    # the counter updates with a short delay: poll instead of reading once
+    for _wait in range(10):
+        time.sleep(0.3)
+        if not vision.progress_same(before, vision.progress_crop(vision.grab())):
+            return "ok"
 
     # no progress: the piece is only lying there -> put it back
     mouse.grab_at(dst)
@@ -122,7 +122,12 @@ def main() -> int:
             pieces.append({"key": f"{band[0]}{ri + 1}{ci + 1}", "box": box,
                            "label": label, "probs": p})
     filled = vision.board_filled(img, N)
-    print(f"board {sum(filled)}/{N * N}, pieces {len(pieces)}")
+    rows_now = len(rows)
+    print(f"board {sum(filled)}/{N * N}, pieces {len(pieces)}, tray rows {rows_now}")
+    if rows_now < 4 or len(pieces) < 18:
+        print("ABORT: the tray is not fully on screen (page scrolled?), "
+              "scroll so the whole tray is visible and rerun")
+        return 3
 
     order = [i for i in spiral(N) if not filled[i]]
     plan = []
