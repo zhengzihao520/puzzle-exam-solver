@@ -355,6 +355,31 @@ def board_filled(img: np.ndarray, n: int) -> list[bool]:
     return out
 
 
+# ---- progress counter: the only authoritative success signal -----------------
+# "进度: k/N" sits just above the reference panel; k increases exactly once per piece
+# that is dropped on its own cell, so a change in this crop *is* the verdict.
+PROGRESS_REL = (105, -292, 250, 60)      # relative to the reference panel origin
+
+
+def progress_box(img: np.ndarray) -> tuple[int, int, int, int]:
+    ref = find_reference(img)
+    dx, dy, w, h = PROGRESS_REL
+    x, y = ref.x + dx, ref.y + dy
+    x = max(0, min(x, img.shape[1] - w))
+    y = max(0, min(y, img.shape[0] - h))
+    return x, y, w, h
+
+
+def progress_crop(img: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(sub(img, progress_box(img)), cv2.COLOR_BGR2GRAY)
+
+
+def progress_same(a: np.ndarray, b: np.ndarray, tol: float = 1.5) -> bool:
+    if a.shape != b.shape:
+        return False
+    return float(cv2.absdiff(a, b).mean()) < tol
+
+
 def read_progress(img: np.ndarray) -> str:
     """Raw crop of the progress label; the caller compares it for changes."""
     return sub(img, PROGRESS).tobytes()
