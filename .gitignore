@@ -20,3 +20,7 @@ runs/**/*.cache
 # 图库原图（raw_assets/，748 张）按考核要求入库，不忽略
 
 runs/**/weights/last.pt
+
+# 失败实验的权重（各 52 MB，超过 GitHub 推荐上限）；结论已写进 README，文件本身不入库
+runs/cls_crops/weights/best.pt
+runs/cls_real/weights/best.pt
