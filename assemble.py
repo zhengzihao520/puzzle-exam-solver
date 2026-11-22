@@ -4,9 +4,15 @@ Nothing here touches the mouse.  Given the pieces' pixels and the class wanted b
 answers "which piece goes where" -- so a live run only has to spend its 25 moves placing them.
 
 Cost model: for every ordered pair of pieces, how badly does i's right edge continue into j's
-left edge (and i's bottom into j's top).  Measured on ground truth: the true neighbour is chosen
-first in 19 of 20 cases, so the pairwise signal is strong but not perfect -- which is why the
-whole arrangement is optimised globally instead of pair by pair.
+left edge (and i's bottom into j's top).  Measured on random photos, this cue is *not*
+reliably strong on its own: the true neighbour came first in 19/20 pairs on one favourable
+photo, but 6/20 and 7/20 on two flat, low-contrast ones -- and six synthetic games then came
+out at 3/6 exact (86.7% of pieces).  So seam continuity is used as the tie-breaker it is good
+at, and the cut signs (tab must meet notch, colour-blind) carry the arrangement: 6/6 exact.
+
+Weight matters more than it looks.  At weight 30 a wrong sign outranks every pixel cost, so
+errors stop being nudges and become commands -- at 20% wrong signs the result fell to 83.3%,
+*worse* than ignoring the signs.  At weight 3 it is still 6/6 when clean and 98.7% at 10%.
 
 Search: greedy in ring order, then repeated improvements by swapping two pieces (or three, for
 the cases a swap cannot fix), all under the rule that a piece may only sit in a cell whose class
@@ -70,7 +76,7 @@ def seam_cost(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> tuple[float
     return diff(a["right"], b["left"]), diff(a["bottom"], b["top"])
 
 
-def apply_cut_constraint(cr, cd, piece_edges: dict[int, tuple], weight: float = 30.0) -> None:
+def apply_cut_constraint(cr, cd, piece_edges: dict[int, tuple], weight: float = 3.0) -> None:
     """Add the engine's hard rule as a heavy penalty: a tab must meet a notch.
 
     Measured reason this matters more than the pixels: seam continuity alone identified the true
@@ -243,7 +249,7 @@ def synth_game(photo: np.ndarray, rng: random.Random, classes: int = 8):
     _tab, margin, cw, ch = pc.geometry(W, H)
     m = int(round(margin))
     hh, ww = photo.shape[:2]
-    pieces, piece_cls = [], {}
+    pieces, piece_cls, piece_edges = [], {}, {}
     for i, ((r, c), e) in enumerate(edges.items()):
         canvas = np.zeros((ch, cw, 3), np.uint8)
         ox, oy = c * W - m, r * H - m
@@ -255,13 +261,36 @@ def synth_game(photo: np.ndarray, rng: random.Random, classes: int = 8):
         canvas[pc.piece_mask(tuple(e), W, H) == 0] = 0
         pieces.append(canvas)
         piece_cls[i] = cell_cls[(r, c)]
+        piece_edges[i] = tuple(e)
     truth = {cell: i for i, cell in enumerate(edges)}
-    return pieces, cell_cls, piece_cls, truth
+    return pieces, cell_cls, piece_cls, piece_edges, truth
+
+
+def _score(assign: dict, truth: dict) -> int:
+    return sum(1 for cell, i in assign.items() if truth.get(cell) == i)
+
+
+def _corrupt(piece_edges: dict[int, tuple], p: float, rng: random.Random):
+    """Simulate the tray reader: each side may come back unknown or wrong."""
+    out = {}
+    for i, e in piece_edges.items():
+        s = list(e)
+        for k in range(4):
+            if rng.random() < p:
+                s[k] = 0 if rng.random() < 0.5 else -s[k]
+        out[i] = tuple(s)
+    return out
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--selftest", type=int, default=0)
+    ap.add_argument("--err", type=float, default=0.0,
+                    help="fraction of cut sides the reader gets wrong (0 = perfect)")
+    ap.add_argument("--weight", type=float, default=3.0,
+                    help="how hard a mismatched tab/notch pushes the cost; 30 makes wrong "
+                         "signs dominate (20%% errors -> 83%%, worse than pixels alone), "
+                         "3 costs nothing when the signs are clean and degrades gently")
     args = ap.parse_args()
     if not args.selftest:
         print("nothing to do: pass --selftest N")
@@ -269,20 +298,32 @@ def main() -> int:
 
     photos = sorted(glob.glob(r"F:\exam_next\raw_assets\*\*.jpg"))
     rng = random.Random(11)
-    exact = 0
-    per_piece = 0.0
+    exact = [0, 0]
+    per_piece = [0.0, 0.0]
     for t in range(args.selftest):
         photo = cv2.imread(rng.choice(photos))
         photo = cv2.resize(photo, (W * N, H * N), interpolation=cv2.INTER_AREA)
-        pieces, cell_cls, piece_cls, truth = synth_game(photo, rng)
+        pieces, cell_cls, piece_cls, piece_edges, truth = synth_game(photo, rng)
         cr, cd = cost_matrices(pieces)
-        got = assemble(cell_cls, piece_cls, cr, cd)
-        right = sum(1 for cell, i in got.items() if truth.get(cell) == i)
-        per_piece += right / (N * N)
-        exact += (right == N * N)
-        print(f"  game {t + 1}: {right}/{N * N} pieces in their true cell")
-    print(f"\nexactly solved {exact}/{args.selftest} games; "
-          f"mean per-piece accuracy {per_piece / args.selftest:.1%}")
+
+        read = _corrupt(piece_edges, args.err, rng) if args.err else piece_edges
+        cr2, cd2 = cr.copy(), cd.copy()
+        apply_cut_constraint(cr2, cd2, read, weight=args.weight)
+
+        plain = assemble(cell_cls, piece_cls, cr, cd)
+        cut = assemble(cell_cls, piece_cls, cr2, cd2)
+        r0, r1 = _score(plain, truth), _score(cut, truth)
+        per_piece[0] += r0 / (N * N)
+        per_piece[1] += r1 / (N * N)
+        exact[0] += (r0 == N * N)
+        exact[1] += (r1 == N * N)
+        print(f"  game {t + 1}: pixels only {r0}/{N * N}   with cut signs {r1}/{N * N}")
+
+    for k, name in enumerate(("pixels only", "with cut signs")):
+        print(f"{name:15s} exactly solved {exact[k]}/{args.selftest} games, "
+              f"mean per-piece accuracy {per_piece[k] / args.selftest:.1%}")
+    if args.err:
+        print(f"(cut signs corrupted on {args.err:.0%} of sides)")
     return 0
 
 
