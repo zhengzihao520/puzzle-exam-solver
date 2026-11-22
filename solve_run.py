@@ -321,15 +321,41 @@ def main() -> int:
                      jigsaw.candidates_for(cell_cls, pieces, (r, c), n=N)
                      if p not in run.used]
             if not cands:
-                continue
-            print(f"\ncell({cell}) wants {cells[cell]}")
-            for piece, _sc in cands[:3]:
+                # The class filter found nothing, which means this cell's piece is one the
+                # classifier filed under the wrong class.  Fall back to trying the leftovers
+                # -- but only when few are left, so this never becomes a brute force.
+                spare = [p for p in pieces if p not in run.used]
+                if len(spare) <= 10:
+                    cands = [(p, 99) for p in spare]
+                    print(f"\ncell({cell}) wants {cells[cell]} -- no class match, "
+                          f"trying the {len(spare)} leftovers")
+                else:
+                    continue
+            else:
+                print(f"\ncell({cell}) wants {cells[cell]}")
+            placed_here = False
+            for piece, _sc in cands[:9]:
                 if run.moves >= args.max_moves:
                     break
                 if run.deliver(piece, cell, boxes):
                     progress += 1
+                    placed_here = True
                     break
                 run.park(boxes, piece)
+            # Even a class match can be wrong: the classifier can put a cell's piece under
+            # another class, in which case the right piece is sitting among the leftovers.
+            # Try those too, but only when few are left, so this never becomes brute force.
+            if not placed_here and run.moves < args.max_moves:
+                spare = [p for p in pieces if p not in run.used]
+                if 0 < len(spare) <= 10:
+                    print(f"  no class match worked; trying {len(spare)} leftovers")
+                    for piece in spare:
+                        if run.moves >= args.max_moves:
+                            break
+                        if run.deliver(piece, cell, boxes):
+                            progress += 1
+                            break
+                        run.park(boxes, piece)
         if progress == 0:
             print("  no progress in this pass, stopping")
             break
