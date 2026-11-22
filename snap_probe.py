@@ -76,7 +76,7 @@ def main() -> int:
             mouse.glide((cx + dx, cy))
             time.sleep(mouse.settle * 1.2)
             # did it stop following?  nudge and look at the cell
-            mouse.glide((cx + dx + 62, cy + 46))
+            mouse.glide((cx + dx + 125, cy + 95))
             time.sleep(mouse.settle * 1.2)
             if cell_mean(mouse.shot(), cell) >= vision.BOARD_FILLED_LEVEL * 0.9:
                 hit = dx

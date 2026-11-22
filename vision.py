@@ -30,7 +30,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent
 WEIGHTS = ROOT / "runs" / "cls" / "weights" / "best.pt"
 
-BOARD = (463, 460, 530, 418)
+BOARD = (433, 453, 560, 425)      # measured: 5 cells of 112 x 85, frame included
 REFERENCE = (1436, 509, 451, 338)
 PROGRESS = (1540, 225, 1790, 285)
 TRAY_REGIONS = {"left": (10, 460, 420, 1000), "right": (990, 1440, 420, 1000)}
@@ -82,7 +82,7 @@ def sub(img: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
 # Everything is re-derived from the panel on every grab, so browser scroll and zoom
 # no longer break the constants.
 CAL_REF = (451.0, 339.0)
-BOARD_REL = (-972.0, -57.0, 530.0, 418.0)
+BOARD_REL = (-1002.0, -64.0, 560.0, 425.0)
 TRAY_REL = {"left": (-1425.0, -975.0, -97.0, 483.0),
             "right": (-445.0, 5.0, -97.0, 483.0)}
 
