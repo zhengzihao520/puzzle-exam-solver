@@ -210,9 +210,25 @@ def seam_plan(mouse: Mouse, pieces: "Pieces", cell_cls: dict, edges: dict,
         return {}
 
     cr, cd = asm.cost_matrices(crops)
-    piece_edges = {i: tuple(EDGE_SIGN[edges[k].get(s)] for s in SIDES)
-                   for i, k in enumerate(kept)}
-    known = sum(1 for e in piece_edges.values() if None not in e)
+    def signs_of(k: str) -> tuple:
+        """Four signs, with self-contradictory readings thrown out.
+
+        A piece occupies one row and one column, so it can have at most one flat side per axis.
+        The reader returned "flat left and flat right" for two pieces on one tray, and three
+        pieces claiming to be the bottom-left corner at once -- geometrically impossible, and
+        therefore free to reject.  Such a pair is dropped to unknown rather than passed on as
+        though it were evidence.
+        """
+        got = {s: EDGE_SIGN[edges[k].get(s)] for s in SIDES}
+        if got["top"] == 0 and got["bottom"] == 0:
+            got["top"] = got["bottom"] = None
+        if got["left"] == 0 and got["right"] == 0:
+            got["left"] = got["right"] = None
+        return tuple(got[s] for s in SIDES)
+
+    piece_edges = {i: signs_of(k) for i, k in enumerate(kept)}
+    dropped = sum(1 for k in kept
+                  if tuple(EDGE_SIGN[edges[k].get(s)] for s in SIDES) != signs_of(k))
     # A doubtful piece may stand in for either of its two readings, but only where that is
     # actually needed.  Left free, the seam cost happily used a doubtful dog as the penguin --
     # penguin was already well supplied -- and the dog cell it should have filled stayed empty.
@@ -231,8 +247,41 @@ def seam_plan(mouse: Mouse, pieces: "Pieces", cell_cls: dict, edges: dict,
         allow[i] = (cand or None) if have[label] < need.get(label, 0) else frozenset([label])
     asm.apply_cut_constraint(cr, cd, piece_edges, weight=weight)
     got = asm.assemble(cell_cls, allow, cr, cd, n=N)
-    print(f"  seam plan: {len(kept)} pieces, {known} with all four cuts read, "
-          f"{len(got)}/{len(cell_cls)} cells filled")
+    known = sum(1 for e in piece_edges.values() if None not in e)
+    per_side = Counter()
+    for e in piece_edges.values():
+        for name, v in zip(SIDES, e):
+            if v == 0:
+                per_side[name] += 1
+    # Cells no piece can legally fill: a cell wanting umbrella when the reader put no umbrella
+    # in the tray at all.  Rather than leave it empty, offer the piece whose edges best continue
+    # its locked neighbours -- the engine still refuses a wrong one and the piece comes straight
+    # back, so a guess costs two moves and a gap costs the cell.
+    left_out = [c for c in cell_cls if c not in got]
+    for cell in left_out:
+        spare = [i for i in range(len(kept)) if i not in got.values()]
+        if not spare:
+            break
+        r, c = cell
+
+        def fit(i: int) -> float:
+            cost = 0.0
+            if (r, c - 1) in got:
+                cost += cr[got[(r, c - 1)], i]
+            if (r, c + 1) in got:
+                cost += cr[i, got[(r, c + 1)]]
+            if (r - 1, c) in got:
+                cost += cd[got[(r - 1, c)], i]
+            if (r + 1, c) in got:
+                cost += cd[i, got[(r + 1, c)]]
+            return cost
+
+        got[cell] = min(spare, key=fit)
+    print(f"  seam plan: {len(kept)} pieces, {known} with all four cuts readable, "
+          f"{dropped} rejected as impossible, {len(got)}/{len(cell_cls)} cells filled"
+          + (f" ({len(left_out)} guessed from edges alone)" if left_out else ""))
+    print("  flats per side: " + "  ".join(f"{k[:1]} {per_side[k]}" for k in SIDES)
+          + "   (a 5x5 needs 5 each)")
     return {f"{r},{c}": kept[i] for (r, c), i in got.items()}
 
 
@@ -266,6 +315,9 @@ def main() -> int:
     ap.add_argument("--go", action="store_true")
     ap.add_argument("--edges", action="store_true", help="also read each piece's cut (one move per piece)")
     ap.add_argument("--max-moves", type=int, default=120)
+    ap.add_argument("--passes", type=int, default=4,
+                    help="how many times to walk the ring; a later pass may only offer pieces "
+                         "and cells not already tried together, so it cannot spin forever")
     args = ap.parse_args()
     ok, why = check_foreground()
     print(f"foreground: {why}")
@@ -340,7 +392,18 @@ def main() -> int:
     # answers: 6/6 exact, and still 6/6 with 10% of the cut signs wrong); the rule solver only
     # asks whether each piece's four cuts are legal somewhere.  Both are computed and the more
     # complete one wins, with the seam plan preferred on a tie because it uses more evidence.
-    cell_cls = {tuple(int(v) for v in k.split(",")): v for k, v in cells.items()}
+    # Seed what is already done first, so the plan is about the cells that still need a piece.
+    # Planning all 25 on a half-finished board was rejected outright by the "as many pieces as
+    # cells" guard: six pieces left in the tray for one empty cell is not a shortage.
+    confirmed: dict[str, str] = {}      # cell -> piece, verified locked
+    start_snap = Snap(mouse.shot())
+    for k in list(start_snap.cells):
+        if vision.has_piece(vision.sub(start_snap.img, start_snap.cells[k]), 30) and \
+                press_is_locked(mouse, start_snap.cells[k]):
+            confirmed[k] = "(already locked)"
+    open_cells = {k: v for k, v in cells.items() if k not in confirmed}
+    print(f"\n{len(confirmed)} cell(s) already locked, {len(open_cells)} still to do")
+    cell_cls = {tuple(int(v) for v in k.split(",")): v for k, v in open_cells.items()}
     plan = seam_plan(mouse, pieces, cell_cls, edges)
     jp = {k: jigsaw.Piece(k, pieces.cls[k],
                           {s: EDGE_SIGN[edges[k].get(s)] for s in SIDES})
@@ -365,22 +428,11 @@ def main() -> int:
     # ---- act: one deliberate move at a time, re-measuring after each --------
     print("\nacting (stateless: the screen is re-read before every move)")
     moves = 0
-    confirmed: dict[str, str] = {}      # cell -> piece, verified locked
     refused: Counter = Counter()
     tried: set[tuple[str, str]] = set()   # (piece, cell) pairs already attempted
-    relocations = 0
+    print("walking the ring over the cells still open")
 
-    # Seed what is already done: the ring walk must not re-play finished cells.  Locked cells
-    # cost no move (the engine will not lift them), so this is free and it makes the visible
-    # order honest -- every printed cell is one that actually received a piece now.
-    start_snap = Snap(mouse.shot())
-    for k in list(start_snap.cells):
-        if vision.has_piece(vision.sub(start_snap.img, start_snap.cells[k]), 30) and \
-                press_is_locked(mouse, start_snap.cells[k]):
-            confirmed[k] = "(already locked)"
-    print(f"\n{len(confirmed)} cell(s) were already locked; walking the ring over the rest")
-
-    for attempt in range(1):
+    for attempt in range(args.passes):
         progress = 0
         for r, c in ring_order(N):
             if moves >= args.max_moves:

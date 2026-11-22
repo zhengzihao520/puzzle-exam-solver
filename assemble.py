@@ -238,7 +238,9 @@ def assemble(cell_cls: dict[tuple[int, int], str], piece_cls: dict[int, str],
     24 perfectly good placements with it.  More filled cells wins over a cheaper partial one.
     """
     import random as _random
-    order = ring_order(n)
+    # Only cells the caller actually named: on a half-finished board that is a handful, and
+    # filling the rest of the 5x5 with them produced more placements than there were cells.
+    order = [c for c in ring_order(n) if c in cell_cls]
     rng = _random.Random(5)
     best_assign, best_key = None, None
     base = list(piece_cls)
@@ -252,7 +254,7 @@ def assemble(cell_cls: dict[tuple[int, int], str], piece_cls: dict[int, str],
         assign = _greedy(seed, cell_cls, piece_cls, cr, cd, n, piece_order)
         if not assign:
             continue
-        if len(assign) == n * n:
+        if len(assign) == len(order):
             assign, cost = _polish(assign, cell_cls, piece_cls, cr, cd, n)
         else:
             cost = arrangement_cost(assign, cr, cd, n)
