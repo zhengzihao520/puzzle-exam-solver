@@ -493,14 +493,12 @@ def read_progress(img: np.ndarray) -> str:
 
 
 def has_piece(cell: np.ndarray) -> bool:
-    """Does this board cell hold a piece, dark photo or not?
+    """Does this board or tray cell hold a piece, dark photo or not?
 
     Brightness alone cannot answer this: a night photo sits at the same mean as the dark
-    placeholder.  An *empty* cell is a flat placeholder -- low mean, low 99th percentile,
-    low standard deviation -- while any photo, however dark, has texture.  Measured on a
-    live board: the darkest placed piece had mean 36.6 with std 43.6 and p99 210, and an
-    empty cell 23.0 / std 0.4 / p99 25.
+    placeholder.  An empty cell is *flat* -- measured 23.0 mean, 0.4-2.0 std -- while any
+    photo, however dark, has texture: the darkest placed piece on a live board was mean 36.6
+    with std 43.6.  So texture is the test.
     """
     g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
-    return not (float(g.mean()) < 45 and float(np.percentile(g, 99)) < 25
-                and float(g.std()) < 4)
+    return not (float(g.std()) < 4.0 and float(g.mean()) < 50)

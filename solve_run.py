@@ -232,10 +232,35 @@ class Run:
         return False
 
     def park(self, boxes: dict[str, tuple], piece: str) -> None:
-        """A refused piece goes back to its own slot, never left on the board."""
-        self.mouse.glide(centre(boxes[piece]))
+        """Put a refused piece away where it can be found again.
+
+        The old version released it at the remembered slot and *assumed* it landed there.  If
+        that slot was occupied, or the remembered box was stale, the piece ended up somewhere
+        else and the bookkeeping went permanently wrong -- one such piece is why a later run
+        could never fill the cell it belonged to.  So: pick a slot that is empty right now,
+        prefer the piece's own, then verify and remember where it actually went.
+        """
+        shot = self.mouse.shot()
+        own = boxes.get(piece)
+        target = None
+        if own is not None and not vision.has_piece(vision.sub(shot, own)):
+            target = own
+        else:
+            free = [b for b in self.slots if not vision.has_piece(vision.sub(shot, b))]
+            if free:
+                target = free[0]
+        if target is None:
+            print("    no empty slot -- releasing where it is")
+            self.mouse.release()
+            return
+        self.mouse.glide(centre(target))
         self.mouse.release()
         self.moves += 1
+        time.sleep(0.2)
+        landed = vision.has_piece(vision.sub(self.mouse.shot(), target))
+        boxes[piece] = target
+        if not landed:
+            print(f"    WARNING: {piece} did not land in ({target[0]},{target[1]})")
 
 
 def main() -> int:
