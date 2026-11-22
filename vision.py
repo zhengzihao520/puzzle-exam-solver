@@ -189,6 +189,34 @@ TRAY_COL_REL = {"left": -1406.0, "right": -433.0}
 TRAY_COLS = 3
 
 
+def tray_slots_all(img: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """Every slot the tray can have, rather than the one geometry that was chosen.
+
+    calibrate_tray picks a single (top offset, row count) by scoring occupied slots, and it can
+    lose a whole row: with exactly thirty pieces a five-row layout "holds" thirty, so it was
+    preferred over the six-row layout the pieces were actually in, and every piece in the first
+    row became invisible -- not in the tray as far as the program could tell, not on the board
+    either.  A piece the program cannot see is a cell that can never be filled.
+
+    So enumerate the plausible offsets, take the union, and clip it to above the taskbar: the
+    icons there are brighter than any gap and a lattice that reaches into them invents pieces.
+    """
+    ref = find_reference(img)
+    _board = layout(img)[1]
+    bottom_limit = _board.y + _board.h + 40
+    out: dict[tuple[int, int], tuple[int, int, int, int]] = {}
+    for band in ("left", "right"):
+        for top_rel in (TRAY_TOP_REL, TRAY_TOP_REL - TRAY_STEP[1]):
+            for _r, _c, box in lattice_slots(img, band, 6, top_rel):
+                x, y, w, h = box
+                if x < 0 or y < 0 or x + w > img.shape[1]:
+                    continue
+                if y + h > bottom_limit:          # the taskbar is not part of the tray
+                    continue
+                out[(x, y)] = box
+    return list(out.values())
+
+
 def lattice_slots(img: np.ndarray, band: str,
                   rows: int | None = None,
                   top_rel: float | None = None

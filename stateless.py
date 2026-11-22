@@ -65,8 +65,9 @@ class Snap:
         self.img = img
         self.ref, self.board, _ = vision.layout(img)
         self.cells = {f"{r},{c}": b for r, c, b in self.board.cells(N)}
-        self.slots, self.rows, self.top_rel, self.occ = vision.calibrate_tray(
-            img, expected=N * N + round(N * N * 0.2))
+        self.slots = vision.tray_slots_all(img)
+        self.rows, self.top_rel, self.occ = 0, 0.0, sum(
+            1 for b in self.slots if not vision.is_empty(vision.sub(img, b)))
         self.panel = {f"{r},{c}": b for r, c, b in self.ref.cells(N)}
 
     def cell_has_piece(self, key: str) -> bool:
