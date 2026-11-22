@@ -74,6 +74,8 @@ def find(img: np.ndarray, tpl: np.ndarray, regions: list[tuple[int, int, int, in
     grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     small = cv2.resize(grey, (max(1, int(grey.shape[1] / sx)), max(1, int(grey.shape[0] / sy))),
                        interpolation=cv2.INTER_AREA).astype(np.float32)
+    if tpl.ndim == 3:                     # colour template: compare luminance
+        tpl = tpl.mean(axis=2)
     best = (-1, -1, -1.0)
     for (x0, y0, rx, ry) in (regions or [(0, 0, grey.shape[1], grey.shape[0])]):
         a0, b0 = int(x0 / sx), int(y0 / sy)
@@ -109,3 +111,26 @@ def where(img: np.ndarray, tpl: np.ndarray, tray_boxes: list[tuple] | None = Non
     if s >= GOOD:
         return ("loose", (x, y, 112, 85), s)
     return ("lost", None, s)
+
+
+def refine(img: np.ndarray, tpl: np.ndarray, box, radius: int = 20, step: int = 2):
+    """Nudge a box onto the piece it actually shows.
+
+    A piece that has slipped sits near, not on, a known box.  Grabbing the known box then
+    drags the piece with the wrong offset and every later drop lands shifted -- which is what
+    turned one loose piece into a whole board of them.  A bounded local search finds the true
+    position; it is only 21x21 offsets, and each is compared at an aligned view.
+    """
+    if tpl is None:
+        return box
+    x, y, w, h = box
+    best = (score_at(img, tpl, box), box)
+    for dy in range(-radius, radius + 1, step):
+        for dx in range(-radius, radius + 1, step):
+            if dx == 0 and dy == 0:
+                continue
+            cand = (x + dx, y + dy, w, h)
+            sc = score_at(img, tpl, cand)
+            if sc > best[0]:
+                best = (sc, cand)
+    return best[1] if best[0] >= GOOD else box

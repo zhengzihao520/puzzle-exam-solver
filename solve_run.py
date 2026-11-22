@@ -225,16 +225,32 @@ class Run:
             return None
         own = boxes.get(piece)
         if own is not None and fp.score_at(shot, tpl, own) >= fp.GOOD:
-            return own
+            fixed = fp.refine(shot, tpl, own)
+            boxes[piece] = fixed
+            return fixed
         cands = list(self.slots) + list(self.cells.values())
         scored = [(fp.score_at(shot, tpl, b), b) for b in cands]
         scored.sort(key=lambda t: -t[0])
         score, found = scored[0]
         if score >= fp.GOOD:
+            found = fp.refine(shot, tpl, found)
             boxes[piece] = found
             print(f"    {piece} re-located at ({found[0]},{found[1]}) score {score:.2f}")
             return found
-        print(f"    {piece}: not in any slot or cell (best {score:.2f})")
+        # Coarse search over the whole window, then a local refinement, then the same
+        # 0.80 gate.  The coarse peak alone is not trustworthy (it matched pieces that were
+        # not there); the refined full-resolution score is, because different pieces measure
+        # at most 0.48 at an aligned box.
+        x, y, coarse = fp.find(shot, tpl)
+        if coarse >= 0.45:
+            cand = fp.refine(shot, tpl, (x, y, 112, 85), radius=24)
+            fine = fp.score_at(shot, tpl, cand)
+            if fine >= fp.GOOD:
+                boxes[piece] = cand
+                print(f"    {piece} recovered at ({cand[0]},{cand[1]}) "
+                      f"coarse {coarse:.2f} fine {fine:.2f}")
+                return cand
+        print(f"    {piece}: not found (best slot/cell {score:.2f}, coarse {coarse:.2f})")
         return None
 
     def deliver(self, piece: str, cell: str, boxes: dict[str, tuple]) -> bool:
