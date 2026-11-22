@@ -77,10 +77,9 @@ def main() -> int:
         print(f"  ({r},{c})  {res}")
 
     print("\ntray")
-    rows = vision.tray_rows(img)
     pieces: dict[str, object] = {}
     for band in ("left", "right"):
-        for ri, ci, box in vision.tray_slots(img, band, rows):
+        for ri, ci, box in vision.lattice_slots(img, band):
             cell = vision.sub(img, box)
             if vision.is_empty(cell):
                 continue

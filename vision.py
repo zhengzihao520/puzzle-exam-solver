@@ -169,10 +169,46 @@ def tray_cols(img: np.ndarray, band: str) -> list[tuple[int, int]]:
     return _keep_regular(_spans(_gap_runs(_dark_frac(g).mean(axis=0)), x0))
 
 
+# ---- the tray lattice, computed the way the engine computes it -------------
+# recon/puzzle_board.js traySlots():
+#
+#     stepX = pieceWidth * 1.16        slot.x = originX + col * stepX + (stepX - pieceWidth) / 2
+#     stepY = pieceHeight * 1.16       slot.y = row * stepY + (stepY - pieceHeight) / 2
+#     originX = side === 0 ? 0 : boardX + boardWidth
+#     columnsPerSide = floor(boardX / stepX),  slotRows = floor(canvasHeight / stepY)
+#
+# Measuring that lattice from the dark gaps works only while the tray is full: once most
+# pieces are placed the gaps are gone and the grid collapses (it was reading three rows of
+# half-height slots).  The pitch and the phase are constants of the layout, so compute them
+# instead of detecting them.  Offsets are relative to the reference panel, like everything
+# else, so they survive scrolling and zoom.
+TRAY_STEP = (129.92, 98.6)          # pieceWidth * 1.16, pieceHeight * 1.16 for a 5x5
+TRAY_PIECE = (112.0, 85.0)
+TRAY_LATTICE = {"left": (-1406.0, -82.0), "right": (-433.0, -82.0)}
+TRAY_SHAPE = (5, 3)                 # rows, columns per band
+
+
+def lattice_slots(img: np.ndarray, band: str) -> list[tuple[int, int, tuple[int, int, int, int]]]:
+    """(row, col, (x, y, w, h)) for a whole tray band, whatever is left in it."""
+    ref = find_reference(img)
+    sx, sy = ref.w / CAL_REF[0], ref.h / CAL_REF[1]
+    dx, dy = TRAY_LATTICE[band]
+    x0, y0 = ref.x + dx * sx, ref.y + dy * sy
+    rows, cols = TRAY_SHAPE
+    pw, ph = TRAY_PIECE[0] * sx, TRAY_PIECE[1] * sy
+    step_x, step_y = TRAY_STEP[0] * sx, TRAY_STEP[1] * sy
+    return [(r, c, (round(x0 + c * step_x), round(y0 + r * step_y),
+                    round(pw), round(ph)))
+            for r in range(rows) for c in range(cols)]
+
+
 def tray_slots(img: np.ndarray, band: str,
                rows: list[tuple[int, int]] | None = None
                ) -> list[tuple[int, int, tuple[int, int, int, int]]]:
-    """(row, col, (x, y, w, h)) for every slot of one band, 0-indexed."""
+    """Deprecated gap-detected slots, kept because older scripts import it.
+
+    It collapses as the tray empties -- use lattice_slots() instead.
+    """
     rows = tray_rows(img) if rows is None else rows
     cols = tray_cols(img, band)
     return [(ri, ci, (cx0, ry0, cx1 - cx0 + 1, ry1 - ry0 + 1))
@@ -190,7 +226,15 @@ def is_empty(cell: np.ndarray) -> bool:
     8-9 (a handful of stray bright pixels survive the drag animation), while every
     photo piece -- even a night shot -- has a 99th percentile well above 60.
     A plain mean/std test misread those stray pixels as pieces.
+
+    The test runs on the middle half of the slot on purpose.  A piece's tabs reach
+    ~19 px past its box, so a full-box crop of an *empty* slot still catches a
+    neighbour's tab and reads as occupied -- which is how the solver came to believe
+    the tray had no free slots while eleven of them were empty.
     """
+    h, w = cell.shape[:2]
+    if h > 8 and w > 8:
+        cell = cell[h // 4:h - h // 4, w // 4:w - w // 4]
     g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
     return float(g.mean()) < EMPTY_LEVEL and float(np.percentile(g, 99)) < EMPTY_P99
 

@@ -83,9 +83,10 @@ class Solver:
 
     # ---- tray bookkeeping --------------------------------------------------
     def slots(self):
-        rows = vision.tray_rows(self.img)
+        # the analytic lattice, not gap detection: the grid must stay right after most
+        # pieces have left the tray, and it must not depend on how many are left
         return [box for b in ("left", "right")
-                for _r, _c, box in vision.tray_slots(self.img, b, rows)]
+                for _r, _c, box in vision.lattice_slots(self.img, b)]
 
     def free_slots(self):
         shot = self.mouse.shot() if self.moves else self.img
@@ -125,24 +126,51 @@ class Solver:
         nothing -- and costs no move, because the engine's mouseup handler returns before
         counting when no piece is selected.  If the piece does move it is still in hand
         when this returns, ready to be carried to the next candidate cell.
+
+        Five press points, not one: a single press that happens to land on nothing changes
+        nothing either, and reading that as "locked" is exactly how an earlier version
+        reported 17 placed cells when the game said 10.  Five misses in a row inside the
+        piece box is not something a loose piece survives.
         """
-        pt = centre(self.box[cell])
-        before = cell_mean(self.mouse.shot(), self.box[cell])
-        self.mouse.grab_at(pt)
-        self.mouse.glide((pt[0] + 62, pt[1] + 38))
-        time.sleep(0.22)
-        after = cell_mean(self.mouse.shot(), self.box[cell])
-        if after >= before - 25 and after > 35:
+        cx, cy = centre(self.box[cell])
+        for dx, dy in ((0, 0), (-30, -20), (30, 20), (-30, 20), (30, -20)):
+            pt = (cx + dx, cy + dy)
+            before = cell_mean(self.mouse.shot(), self.box[cell])
+            self.mouse.grab_at(pt)
+            self.mouse.glide((pt[0] + 62, pt[1] + 38))
+            time.sleep(0.18)
+            after = cell_mean(self.mouse.shot(), self.box[cell])
+            if after < before - 25 or after < 35:
+                return False              # still holding it
             self.mouse.release()          # nothing selected: no move is counted
+        return True
+
+    def grab(self, piece: str) -> bool:
+        """Pick a piece up from its recorded slot and prove that it was picked up.
+
+        The box is remembered from the plan, and a plan goes stale as soon as a piece has
+        been moved, so a grab that finds nothing must not be followed by a drop: an empty
+        hand over an occupied cell looks exactly like a successful placement.
+        A wide nudge is used so the slot is really clear when it is measured; the drag
+        offset is fixed at the moment of the press, so the path does not matter.
+        """
+        src = self.pieces[piece]["box"]
+        cx, cy = centre(src)
+        self.mouse.grab_at((cx, cy))
+        self.mouse.glide((cx + 96, cy + 74))
+        time.sleep(0.18)
+        if vision.is_empty(vision.sub(self.mouse.shot(), src)):
             return True
-        return False                      # still holding it, offset by (62,38)
+        self.mouse.release()
+        print(f"    {piece}: slot ({src[0]},{src[1]}) is empty -- that piece is not there")
+        self.used.add(piece)
+        return False
 
     def place(self, piece: str, cell: str) -> bool:
         """Carry one piece to one cell, let go, and report whether it stuck."""
-        src = self.pieces[piece]["box"]
-        dst = centre(self.box[cell])
-        self.mouse.grab_at(centre(src))
-        self.mouse.glide(dst)
+        if not self.grab(piece):
+            return False
+        self.mouse.glide(centre(self.box[cell]))
         time.sleep(0.18)
         self.mouse.release()
         self.moves += 1
