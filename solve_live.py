@@ -103,13 +103,18 @@ class Mouse:
         self.settle = settle
 
     def grab_at(self, pt) -> None:
-        self.gui.moveTo(int(pt[0]), int(pt[1]), duration=self.speed * 0.5)
+        self.gui.moveTo(*self._safe(pt), duration=self.speed * 0.5)
         time.sleep(self.settle)
         self.gui.mouseDown()
         time.sleep(self.settle * 2)
 
+    def _safe(self, pt):
+        """Keep away from the screen corners so pyautogui's fail-safe cannot fire on our
+        own moves (the user can still abort by taking the pointer there themselves)."""
+        return max(40, min(int(pt[0]), 1880)), max(40, min(int(pt[1]), 1040))
+
     def glide(self, pt) -> None:
-        self.gui.moveTo(int(pt[0]), int(pt[1]), duration=self.speed)
+        self.gui.moveTo(*self._safe(pt), duration=self.speed)
 
     def release(self) -> None:
         self.gui.mouseUp()
