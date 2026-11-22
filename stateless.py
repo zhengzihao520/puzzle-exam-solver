@@ -39,6 +39,7 @@ from solve_live import Mouse, _enable_dpi, check_foreground, centre
 N = 5
 SHOTS = vision.ROOT / "shots"
 LOG = vision.ROOT / "logs" / "stateless.json"
+CUTLOG = vision.ROOT / "logs" / "cuts.jsonl"
 EDGE_SIGN = {"tab": 1, "notch": -1, "flat": 0, None: None}
 SIDES = ("top", "right", "bottom", "left")
 
@@ -358,15 +359,24 @@ def main() -> int:
 
     edges: dict[str, dict] = {k: {s: None for s in SIDES} for k in pieces.tpl}
     if args.edges and args.go:
-        print(f"\nreading {len(list(pieces.tpl))} cuts (one move each: lifted, photographed, put back)")
-        for i, key in enumerate(list(pieces.tpl)):
+        # White pieces are skipped.  All five carry the same pure-white picture, so any of them
+        # fits any white cell and their cut shape decides nothing -- while a white-on-white edge
+        # is exactly what this reader cannot see (one came back with all four sides unknown).
+        to_read = [k for k in pieces.tpl
+                   if whiteness(vision.sub(snap.img, pieces.box[k])) < 0.9]
+        print(f"\nreading {len(to_read)} cuts (one move each: lifted, photographed, put back); "
+              f"{len(pieces.tpl) - len(to_read)} white piece(s) skipped")
+        # Hold the piece over the empty canvas below the board, not over a cell.  Mid-game the
+        # only free cells are surrounded by placed pieces, and a silhouette measured against
+        # neighbouring art is worthless: that run produced 7 conflicting edges out of 11 pairs,
+        # against 1 out of 12 while the board was still empty.
+        dark = (board.x + board.w // 2, board.y + board.h + 45)
+        for i, key in enumerate(to_read):
             snap = Snap(mouse.shot())
             box, _sc = locate(snap, pieces.tpl[key])
             if box is None:
                 print(f"  {key}: not visible, cut unknown")
                 continue
-            empty = [k2 for k2 in snap.cells if not snap.cell_has_piece(k2)]
-            spot = centre(snap.cells[empty[i % len(empty)]]) if empty else (713, 665)
             sx, sy = centre(box)
             mouse.grab_at((sx, sy))
             mouse.glide((sx + 96, sy + 74))
@@ -375,13 +385,17 @@ def main() -> int:
                 mouse.release()
                 print(f"  {key}: did not come away, cut unknown")
                 continue
-            mouse.glide(spot)                      # hold it over an empty cell: isolated
+            mouse.glide(dark)                      # hold it against plain background: isolated
             time.sleep(0.22)
             shot = mouse.shot()
             cv2.imwrite(str(SHOTS / f"cut_{i:02d}.png"), shot)
-            edges[key] = pe.read_edges_union(shot, (spot[0] - 56, spot[1] - 42, 112, 85))
+            crop = (dark[0] - 56, dark[1] - 42, 112, 85)
+            edges[key] = pe.read_edges_union(shot, crop)
+            with CUTLOG.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"key": key, "crop": list(crop),
+                                     "signs": edges[key]}) + "\n")
             mark = " ".join(f"{s0[0]}{edges[key][s0] or '?'}" for s0 in SIDES)
-            print(f"  {key} ({pieces.cls[key]}) {mark}   [{i + 1}/{len(list(pieces.tpl))}]")
+            print(f"  {key} ({pieces.cls[key]}) {mark}   [{i + 1}/{len(to_read)}]")
             mouse.glide((sx, sy))                  # put it back where it was
             mouse.release()
             time.sleep(0.12)
