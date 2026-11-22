@@ -1,4 +1,4 @@
-"""Stateless executor: measure everything, then take one action. Repeat.
+﻿"""Stateless executor: measure everything, then take one action. Repeat.
 
 Why this replaces the old loop: every bug in this session came from carrying state across
 frames -- a remembered slot, a cached cell box, an assumed piece position.  One release that
@@ -245,7 +245,7 @@ def main() -> int:
     refused: Counter = Counter()
     relocations = 0
 
-    for attempt in range(3):
+    for attempt in range(4):
         progress = 0
         for r, c in ring_order(N):
             if moves >= args.max_moves:
@@ -265,7 +265,7 @@ def main() -> int:
             if not order:
                 order = pieces.spare()[:3]            # nothing of that class left
             done = False
-            for pk in order[:3]:
+            for pk in order[:6]:
                 if moves >= args.max_moves:
                     break
                 box, sc = locate(snap, pieces.tpl[pk])
@@ -317,3 +317,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
