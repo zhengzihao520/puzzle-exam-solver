@@ -126,17 +126,26 @@ class Pieces:
         return [k for k in self.tpl if k not in self.used and (cls is None or self.cls[k] == cls)]
 
 
-def press_is_locked(mouse: Mouse, box) -> bool:
-    """One press at the box centre: a placed piece cannot be lifted."""
-    before = float(cv2.cvtColor(vision.sub(mouse.shot(), box), cv2.COLOR_BGR2GRAY).mean())
+def press_is_locked(mouse: Mouse, box, presses: int = 5) -> bool:
+    """Can the engine lift what is in this box?
+
+    Five press points, not one.  A single press that lands on nothing changes nothing either,
+    and reading that as "locked" is exactly how an earlier version reported 17 placed cells
+    when the game said 10.  A locked box costs no move (the engine returns before counting),
+    so the extra presses are free.
+    """
     cx, cy = centre(box)
-    mouse.grab_at((cx, cy))
-    mouse.glide((cx + 62, cy + 38))
-    time.sleep(0.16)
-    after = float(cv2.cvtColor(vision.sub(mouse.shot(), box), cv2.COLOR_BGR2GRAY).mean())
-    if after < before - 25 or after < 30:
-        return False                      # it came with the pointer
-    mouse.release()
+    offsets = ((0, 0), (-30, -20), (30, 20), (-30, 20), (30, -20))[:presses]
+    for dx, dy in offsets:
+        pt = (cx + dx, cy + dy)
+        before = float(cv2.cvtColor(vision.sub(mouse.shot(), box), cv2.COLOR_BGR2GRAY).mean())
+        mouse.grab_at(pt)
+        mouse.glide((pt[0] + 62, pt[1] + 38))
+        time.sleep(0.14)
+        after = float(cv2.cvtColor(vision.sub(mouse.shot(), box), cv2.COLOR_BGR2GRAY).mean())
+        if after < before - 25 or after < 30:
+            return False                  # it came with the pointer
+        mouse.release()
     return True
 
 
@@ -296,7 +305,9 @@ def main() -> int:
 
     final = Snap(mouse.shot())
     cv2.imwrite(str(SHOTS / "stateless_end.png"), final.img)
-    locked = [k for k in final.cells if press_is_locked(mouse, final.cells[k])]
+    locked = [k for k in final.cells
+              if vision.has_piece(vision.sub(final.img, final.cells[k]), 30)
+              and press_is_locked(mouse, final.cells[k])]
     print(f"\nmoves: {moves}")
     print(f"confirmed by the loop: {len(confirmed)}   confirmed by a final 5-point audit: "
           f"{len(locked)}")
