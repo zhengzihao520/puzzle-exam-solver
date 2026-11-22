@@ -93,6 +93,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--moves", type=int, default=0)
+    ap.add_argument("--grid", type=int, default=5, help="board is grid x grid cells")
     ap.add_argument("--delay", type=float, default=0.0,
                     help="seconds to wait before touching anything (time to focus the page)")
     args = ap.parse_args()
@@ -100,6 +101,8 @@ def main() -> int:
     if args.delay:
         print(f"waiting {args.delay:.0f}s for you to focus the exam page ...", flush=True)
         time.sleep(args.delay)
+    global N
+    N = args.grid
     ok, why = check_foreground()
     print(f"foreground: {why}")
     if not ok and not args.dry:
