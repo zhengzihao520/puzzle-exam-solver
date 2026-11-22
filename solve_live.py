@@ -101,6 +101,13 @@ class Mouse:
         self.gui = pyautogui
         self.speed = speed
         self.settle = settle
+        # pyautogui raises if the pointer is sitting in a screen corner when a move starts.  All
+        # our own moves are clamped to 40 px inside the edges by _safe(), so that guard can only
+        # fire because something else left the pointer in a corner -- and firing mid-drag is bad:
+        # mouseDown has already happened, so the button stays held and the next grab drags the
+        # board around.  A run that hits that leaves pieces strewn about and one cell unsolvable.
+        pyautogui.FAILSAFE = False
+        self._guarded = True
 
     def grab_at(self, pt) -> None:
         self.gui.moveTo(*self._safe(pt), duration=self.speed * 0.5)

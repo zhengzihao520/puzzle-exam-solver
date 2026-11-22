@@ -154,14 +154,15 @@ def _fits(piece_cls: dict, i: int, want) -> bool:
     return want in v if isinstance(v, (set, frozenset)) else want == v
 
 
-def _greedy(order, cell_cls, piece_cls, cr, cd, n, piece_order):
+def _greedy(order, cell_cls, piece_cls, cr, cd, n, piece_order, cell_ok=None):
     assign: dict[tuple[int, int], int] = {}
     used: set[int] = set()
     for cell in order:
         want = cell_cls.get(cell)
         best, best_cost = None, None
         for i in piece_order:
-            if i in used or not _fits(piece_cls, i, want):
+            if i in used or not _fits(piece_cls, i, want) or \
+                    (cell_ok is not None and not cell_ok(i, cell)):
                 continue
             cost = 0.0
             for (dr, dc) in ((0, -1), (0, 1), (-1, 0), (1, 0)):
@@ -185,7 +186,7 @@ def _greedy(order, cell_cls, piece_cls, cr, cd, n, piece_order):
     return assign
 
 
-def _polish(assign, cell_cls, piece_cls, cr, cd, n):
+def _polish(assign, cell_cls, piece_cls, cr, cd, n, cell_ok=None):
     """Two-swaps and three-cycles until nothing improves."""
     current = arrangement_cost(assign, cr, cd, n)
     keys = list(assign)
@@ -194,7 +195,8 @@ def _polish(assign, cell_cls, piece_cls, cr, cd, n):
         for a, b in combinations(keys, 2):
             ia, ib = assign[a], assign[b]
             if not _fits(piece_cls, ib, cell_cls.get(a)) or \
-               not _fits(piece_cls, ia, cell_cls.get(b)):
+               not _fits(piece_cls, ia, cell_cls.get(b)) or \
+               (cell_ok is not None and (not cell_ok(ib, a) or not cell_ok(ia, b))):
                 continue
             assign[a], assign[b] = ib, ia
             cost = arrangement_cost(assign, cr, cd, n)
@@ -225,7 +227,7 @@ def _polish(assign, cell_cls, piece_cls, cr, cd, n):
 
 
 def assemble(cell_cls: dict[tuple[int, int], str], piece_cls: dict[int, str],
-             cr, cd, n: int = N, restarts: int = 8) -> dict[tuple[int, int], int]:
+             cr, cd, n: int = N, restarts: int = 8, cell_ok=None) -> dict[tuple[int, int], int]:
     """Greedy in ring order from several tie-breakings, then two-swaps and three-cycles.
 
     One greedy pass plus a swap search solved only 3 of 6 synthetic games (84.7% of pieces).
@@ -251,11 +253,11 @@ def assemble(cell_cls: dict[tuple[int, int], str], piece_cls: dict[int, str],
         seed = order[:]
         if k:
             rng.shuffle(seed)
-        assign = _greedy(seed, cell_cls, piece_cls, cr, cd, n, piece_order)
+        assign = _greedy(seed, cell_cls, piece_cls, cr, cd, n, piece_order, cell_ok)
         if not assign:
             continue
         if len(assign) == len(order):
-            assign, cost = _polish(assign, cell_cls, piece_cls, cr, cd, n)
+            assign, cost = _polish(assign, cell_cls, piece_cls, cr, cd, n, cell_ok)
         else:
             cost = arrangement_cost(assign, cr, cd, n)
         key = (len(assign), -cost)

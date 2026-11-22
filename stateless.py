@@ -247,7 +247,33 @@ def seam_plan(mouse: Mouse, pieces: "Pieces", cell_cls: dict, edges: dict,
         # its own class short of pieces -> keep the alternatives; otherwise insist on the reading
         allow[i] = (cand or None) if have[label] < need.get(label, 0) else frozenset([label])
     asm.apply_cut_constraint(cr, cd, piece_edges, weight=weight)
-    got = asm.assemble(cell_cls, allow, cr, cd, n=N)
+
+    def misplaced(i: int, cell: tuple[int, int]) -> bool:
+        """Is this piece physically unable to sit in this cell?
+
+        Asymmetric on purpose.  A piece that *has* a flat side can only have it facing out, so a
+        flat side facing the middle of the board is a contradiction and is refused outright.  The
+        reverse is not used: the reader misses flat sides far more often than it invents them
+        (25 pieces yielded 3 flat tops and 0 flat lefts), so "the cell is on the border but the
+        piece shows no flat there" proves nothing and must not block a placement.
+
+        This is what recovers a cell whose true piece was misread by class: the tray held a piece
+        called "car" with flat top and bottom while the empty cell sat on the bottom row, and it
+        was the only piece that could physically go in -- but the class filter rejected it and
+        the plan sent a suitcase that the engine refused twice.
+        """
+        r, c = cell
+        for side, v in zip(SIDES, piece_edges[i]):
+            if v != 0:
+                continue
+            on_edge = {"top": r == 0, "bottom": r == n - 1,
+                       "left": c == 0, "right": c == n - 1}[side]
+            if not on_edge:
+                return True
+        return False
+
+    got = asm.assemble(cell_cls, allow, cr, cd, n=N,
+                       cell_ok=lambda i, cell: not misplaced(i, cell))
     known = sum(1 for e in piece_edges.values() if None not in e)
     per_side = Counter()
     for e in piece_edges.values():
@@ -265,6 +291,24 @@ def seam_plan(mouse: Mouse, pieces: "Pieces", cell_cls: dict, edges: dict,
             break
         r, c = cell
 
+        def legal(i: int) -> bool:
+            """Does this piece's shape even allow it here?
+
+            A cell on the board's edge needs a flat side facing out, and an interior cell needs
+            three or four cut sides -- a fact independent of the picture and of the class label.
+            This is what found the last cell of a live game: the tray held a piece read as "car"
+            whose shape was flat top and flat bottom while the empty cell was on the bottom row,
+            and it was the only piece there that could physically go in.
+            """
+            for side, v in zip(SIDES, piece_edges[i]):
+                if v is None:
+                    continue
+                on_edge = {"top": r == 0, "bottom": r == N - 1,
+                           "left": c == 0, "right": c == N - 1}[side]
+                if on_edge != (v == 0):
+                    return False
+            return True
+
         def fit(i: int) -> float:
             cost = 0.0
             if (r, c - 1) in got:
@@ -277,7 +321,8 @@ def seam_plan(mouse: Mouse, pieces: "Pieces", cell_cls: dict, edges: dict,
                 cost += cd[i, got[(r + 1, c)]]
             return cost
 
-        got[cell] = min(spare, key=fit)
+        pool = [i for i in spare if legal(i)] or spare
+        got[cell] = min(pool, key=fit)
     print(f"  seam plan: {len(kept)} pieces, {known} with all four cuts readable, "
           f"{dropped} rejected as impossible, {len(got)}/{len(cell_cls)} cells filled"
           + (f" ({len(left_out)} guessed from edges alone)" if left_out else ""))
@@ -324,8 +369,12 @@ def main() -> int:
     print(f"foreground: {why}")
     if not ok:
         return 2
-
     mouse = Mouse()
+    # A crash between mouseDown and mouseUp would leave the button held, and the next grab then
+    # drags whatever the pointer is over -- pieces strewn about, a cell lost for the game.  The
+    # live run did exactly that when pyautogui's fail-safe fired mid-drag.
+    import atexit
+    atexit.register(mouse.release)
     snap = Snap(mouse.shot())
     cv2.imwrite(str(SHOTS / "state_start.png"), snap.img)
     print(f"reference ({snap.ref.x},{snap.ref.y}) board ({snap.board.x},{snap.board.y}) "
@@ -370,7 +419,7 @@ def main() -> int:
         # only free cells are surrounded by placed pieces, and a silhouette measured against
         # neighbouring art is worthless: that run produced 7 conflicting edges out of 11 pairs,
         # against 1 out of 12 while the board was still empty.
-        dark = (board.x + board.w // 2, board.y + board.h + 45)
+        dark = (snap.board.x + snap.board.w // 2, snap.board.y + snap.board.h + 45)
         for i, key in enumerate(to_read):
             snap = Snap(mouse.shot())
             box, _sc = locate(snap, pieces.tpl[key])
@@ -443,7 +492,18 @@ def main() -> int:
     print("\nacting (stateless: the screen is re-read before every move)")
     moves = 0
     refused: Counter = Counter()
-    tried: set[tuple[str, str]] = set()   # (piece, cell) pairs already attempted
+    # (piece, cell) pairs already attempted.  Read from disk and written back, because the pairs a
+    # single run can retire are few: the plan keeps proposing the same piece for the same cell,
+    # and with a fresh set each time the next run repeats the refusals instead of moving on to the
+    # other copy of that class -- of which the exam always gives one that does not fit (a decoy).
+    TRIED = vision.ROOT / "logs" / "tried.json"
+    tried: set[tuple[str, str]] = set()
+    if TRIED.exists():
+        try:
+            tried = {(a, b) for a, b in json.loads(TRIED.read_text(encoding="utf-8"))}
+        except (ValueError, OSError):
+            tried = set()
+        print(f"  {len(tried)} (piece, cell) pair(s) already refused in earlier runs")
     print("walking the ring over the cells still open")
 
     for attempt in range(args.passes):
@@ -461,18 +521,19 @@ def main() -> int:
             if not anchored:
                 continue
             wanted = cells[key]
-            # exactly one piece is offered for this cell in this pass: the planned one, or
-            # the single best spare of that class.  Trying several per cell is what turned
-            # the pass into a sweep.
+            # The planned piece first, then at most two others of the same class that have not
+            # already been refused here.  The exam gives a decoy of a class it also needs, so the
+            # plan's first choice can be the one that does not fit this cell, and with a single
+            # candidate the run would keep re-proposing it instead of trying the other copy.
             order = ([plan[key]] if key in plan and plan[key] not in pieces.used else [])
             order = [k for k in order if (k, key) not in tried]
             if not order:
-                order = [k for k in pieces.spare(wanted) if (k, key) not in tried][:1]
+                order = [k for k in pieces.spare(wanted) if (k, key) not in tried][:2]
             if not order:
                 print(f"    cell({key}) {wanted}: no piece of that class left -- cell left empty")
                 continue
             done = False
-            for pk in order[:1]:
+            for pk in order:
                 if moves >= args.max_moves:
                     break
                 box, sc = locate(snap, pieces.tpl[pk])
@@ -508,22 +569,25 @@ def main() -> int:
                     break
                 refused[(pieces.cls[pk], wanted)] += 1
                 tried.add((pk, key))
+                TRIED.write_text(json.dumps(sorted(tried)), encoding="utf-8")
                 print(f"    {pk} ({pieces.cls[pk]}) -> cell({key}) wanted {wanted}  "
                       f"[move {moves}]  refused (fingerprint {here:.2f})")
-                # The user's rule, and the right one: the board never keeps a wrong piece.
-                # Take it straight back to a slot that is empty in this very photograph.
-                after = Snap(mouse.shot())
-                free = [b for b in after.slots if not after.slot_has_piece(b)]
-                if free:
-                    mouse.grab_at(centre(after.cells[key]))
-                    mouse.glide(centre(free[0]))
-                    mouse.release()
-                    moves += 1
-                    time.sleep(0.18)
-                    print(f"      -> taken back to slot ({free[0][0]},{free[0][1]})  "
-                          f"[move {moves}]")
+                # The user's rule, and the reason it matters beyond tidiness: take the piece back
+                # to *its own* slot, not to "some free slot".  A piece parked somewhere else
+                # drifts -- the drop lands a few pixels off the lattice, and the only way this
+                # program finds a piece again is by fingerprint against the 36 known slots, so a
+                # piece nudged away from its slot is a piece it can no longer see.  That is the
+                # failure that leaves one cell unsolved for the rest of a game.
+                mouse.grab_at(centre(after.cells[key]))
+                mouse.glide((sx, sy))              # exactly where it was picked up from
+                mouse.release()
+                moves += 1
+                time.sleep(0.18)
+                back = Snap(mouse.shot())
+                if not fp.score_at(back.img, pieces.tpl[pk], box) > 0.8:
+                    print(f"      -> taken back to ({sx},{sy}), but it is not there any more")
                 else:
-                    print("      -> no empty slot to take it back to")
+                    print(f"      -> taken back to its own slot at ({sx},{sy})  [move {moves}]")
                 break            # one piece per cell per pass: no candidate roulette
         if progress == 0:
             print("  no progress in this pass")
