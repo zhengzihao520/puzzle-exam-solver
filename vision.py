@@ -492,13 +492,463 @@ def read_progress(img: np.ndarray) -> str:
 
 
 
-def has_piece(cell: np.ndarray) -> bool:
-    """Does this board or tray cell hold a piece, dark photo or not?
+def has_piece(cell: np.ndarray, floor: float = 30.0) -> bool:
+    """Does this cell hold a piece?  Middle half, brightness floor, per-context.
 
-    Brightness alone cannot answer this: a night photo sits at the same mean as the dark
-    placeholder.  An empty cell is *flat* -- measured 23.0 mean, 0.4-2.0 std -- while any
-    photo, however dark, has texture: the darkest placed piece on a live board was mean 36.6
-    with std 43.6.  So texture is the test.
+    The two contexts have different floors, and mixing them up is how two pieces ended up
+    stacked in one slot:
+
+      board cell   empty placeholder 22.8-23.3 (a few carry a faint ghost, std up to 30)
+                   darkest placed piece 36.6                      -> floor 30
+      tray slot    empty 8-9, pieces 34-255                          -> floor 20
+
+    The middle half is what a piece always covers and a neighbour's tab never reaches.
     """
+    h, w = cell.shape[:2]
+    if h > 12 and w > 12:
+        cell = cell[h // 4:h - h // 4, w // 4:w - w // 4]
     g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
-    return not (float(g.std()) < 4.0 and float(g.mean()) < 50)
+    return float(g.mean()) >= floor
+
+
+def is_blank(cell: np.ndarray) -> bool:
+    """Reference-panel blank cell: the whole thumbnail is white, centre included."""
+    return _centre_white(cell) >= 0.995
+
+
+BG_LEVEL = 18.0          # the tray background is (9, 9, 9); the border line is ~10-14
+
+
+def _bg_share(a: np.ndarray) -> float:
+    return 0.0 if a.size == 0 else float((a < BG_LEVEL).mean())
+
+
+def flat_sides(img: np.ndarray, box: tuple[int, int, int, int]) -> dict[str, str]:
+    """Per side: 'flat' (straight frame edge), 'tab' (protruding), 'notch' (carved in).
+
+    The site cuts real jigsaw pieces (PieceCutter: tabSize = 0.22*min(w,h), margin =
+    1.5*tabSize), so a piece on the board frame has a straight side there.  Measured
+    from the tray: a tab shows content 3-13 px *outside* the body, a notch shows pure
+    tray background 3-12 px *inside* it, and a flat side shows neither.  Decision is by
+    share of background pixels, not brightness: the piece carries a photo, which may be
+    darker than the tray itself.
+    """
+    x, y, w, h = box
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    x1, x2 = x + w // 3, x + 2 * w // 3
+    y1, y2 = y + h // 3, y + 2 * h // 3
+
+    def kind(inner_bg: float, outer_bg: float) -> str:
+        if inner_bg > 0.5:
+            return "notch"
+        if outer_bg < 0.5:
+            return "tab"
+        return "flat"
+
+    return {
+        "top": kind(_bg_share(g[y + 3:y + 12, x1:x2]),
+                    _bg_share(g[max(0, y - 13):y - 3, x1:x2])),
+        "bottom": kind(_bg_share(g[y + h - 12:y + h - 3, x1:x2]),
+                       _bg_share(g[y + h + 3:y + h + 13, x1:x2])),
+        "left": kind(_bg_share(g[y1:y2, x + 3:x + 12]),
+                     _bg_share(g[y1:y2, max(0, x - 13):x - 3])),
+        "right": kind(_bg_share(g[y1:y2, x + w - 12:x + w - 3]),
+                      _bg_share(g[y1:y2, x + w + 3:x + w + 13])),
+    }
+
+
+def is_real_piece(img: np.ndarray, box: tuple[int, int, int, int]) -> bool:
+    """Reject slot boxes that are really a neighbour's tab bleeding over the gap."""
+    x, y, w, h = box
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    core = g[y + h // 4:y + 3 * h // 4, x + w // 4:x + 3 * w // 4]
+    return _bg_share(core) <= 0.25
+
+
+def _centre_white(cell: np.ndarray) -> float:
+    """Share of near-white pixels in the middle half of the cell."""
+    g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    h, w = g.shape
+    core = g[h // 4:3 * h // 4, w // 4:3 * w // 4]
+    return 0.0 if core.size == 0 else float((core > 190).mean())
+
+
+def is_white_piece(cell: np.ndarray) -> bool:
+    """White decoy piece: the *centre* is white, not just the background.
+
+    Measured on a real tray: the five decoys all score 1.00 on the middle half, while
+    product photos shot on white (desktop computer, cup, suitcase) score 0.02-0.70
+    because the object sits in the middle.  A plain "share of white pixels" test cannot
+    tell those apart -- it flagged 10 pieces where only 5 exist.
+    """
+    return _centre_white(cell) >= 0.995
+
+
+
+class Classifier:
+    """YOLO11s-cls with a flip/scale ensemble for stability."""
+
+    def __init__(self, weights: Path = WEIGHTS, imgsz: tuple[int, ...] = (160, 224)) -> None:
+        from ultralytics import YOLO
+        self.model = YOLO(str(weights))
+        self.names = self.model.names
+        self.imgsz = imgsz
+
+    def probs(self, cell: np.ndarray) -> np.ndarray:
+        out = []
+        for size in self.imgsz:
+            for flip in (False, True):
+                view = cv2.flip(cell, 1) if flip else cell
+                res = self.model.predict(view, imgsz=size, verbose=False)[0]
+                out.append(res.probs.data.cpu().numpy())
+        return np.mean(out, axis=0)
+
+    def label(self, cell: np.ndarray) -> tuple[str, float]:
+        if is_blank(cell):
+            return BLANK, 1.0
+        p = self.probs(cell)
+        return str(self.names[int(p.argmax())]), float(p.max())
+
+
+def find_reference(img: np.ndarray) -> Rect:
+    """Right-hand reference panel: the largest bright blob right of the board.
+
+    Detected rather than hard coded because the page shifts a few pixels between
+    games; the measured box (1435, 517, 451, 339) is the fallback.
+    """
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    bright = cv2.morphologyEx((g > 150).astype(np.uint8), cv2.MORPH_CLOSE,
+                              np.ones((9, 9), np.uint8))
+    n, _lab, stats, _cent = cv2.connectedComponentsWithStats(bright)
+    best = None
+    for i in range(1, n):
+        x, y, w, h, area = (int(v) for v in stats[i][:5])
+        if x < 900 or w < 200 or area < 30000:
+            continue
+        if not 1.2 <= w / h <= 1.45:
+            continue
+        if best is None or area > best[4]:
+            best = (x, y, w, h, area)
+    return Rect(*best[:4]) if best else Rect(*REFERENCE)
+
+
+def reference_grid(img: np.ndarray, n: int, clf: Classifier) -> list[str]:
+    """Required class per board cell, row-major (index = row * n + col)."""
+    ref = find_reference(img)
+    return [clf.label(sub(img, box))[0] for _r, _c, box in ref.cells(n)]
+PIECE_AREA = 9520          # 112 x 85, the area of one tray piece
+
+
+def tray_pieces(img: np.ndarray) -> list[tuple[str, tuple[int, int, int, int]]]:
+    """Locate tray pieces by connected components.
+
+    The gap-grid works while the tray is full, but once most slots are empty the
+    gaps disappear and the grid cannot be recovered.  Components stay reliable in
+    both cases; blobs that clearly hold two touching pieces are split.
+    """
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    out = []
+    for band in ("left", "right"):
+        x0, x1, y0, y1 = tray_region(img, band)
+        mask = cv2.morphologyEx((g[y0:y1, x0:x1] > 40).astype(np.uint8),
+                                cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        n, _lab, stats, _cent = cv2.connectedComponentsWithStats(mask)
+        for i in range(1, n):
+            x, y, w, h, area = (int(v) for v in stats[i][:5])
+            if area < PIECE_AREA * 0.45:
+                continue
+            count = max(1, round(area / PIECE_AREA))
+            step = (w if w >= h else h) / count
+            for k in range(count):
+                if w >= h:
+                    bx, by, bw, bh = x0 + x + int(k * step), y0 + y, int(step), h
+                else:
+                    bx, by, bw, bh = x0 + x, y0 + y + int(k * step), w, int(step)
+                out.append((band, (bx, by, bw, bh)))
+    return out
+
+
+def board_filled(img: np.ndarray, n: int) -> list[bool]:
+    """A board cell is filled once it shows a photo instead of the dark placeholder.
+
+    Measured: the placeholder sits at mean 23-27 (a few cells carry a faint ghost,
+    std up to 30), while the darkest real piece still averages 73 -- so the board
+    needs a brightness test, not the flatness test used for tray slots.
+    """
+    board = layout(img)[1]
+    out = []
+    for _r, _c, box in board.cells(n):
+        g = cv2.cvtColor(sub(img, box), cv2.COLOR_BGR2GRAY)
+        out.append(float(g.mean()) >= BOARD_FILLED_LEVEL)
+    return out
+
+
+# ---- progress counter: the only authoritative success signal -----------------
+# "杩涘害: k/N" sits just above the reference panel; k increases exactly once per piece
+# that is dropped on its own cell, so a change in this crop *is* the verdict.
+PROGRESS_REL = (-235, -292, 470, 44)     # the whole "杩涘害: k/N" text row, relative to the reference panel
+
+
+def progress_box(img: np.ndarray) -> tuple[int, int, int, int]:
+    ref = find_reference(img)
+    dx, dy, w, h = PROGRESS_REL
+    x, y = ref.x + dx, ref.y + dy
+    x = max(0, min(x, img.shape[1] - w))
+    y = max(0, min(y, img.shape[0] - h))
+    return x, y, w, h
+
+
+def progress_crop(img: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(sub(img, progress_box(img)), cv2.COLOR_BGR2GRAY)
+
+
+def ticking_columns(a: np.ndarray, b: np.ndarray, thresh: int = 30) -> set[int]:
+    """Columns that change on their own (the running timer sits on the same text row)."""
+    if a.shape != b.shape:
+        return set()
+    cols = (cv2.absdiff(a, b) > 40).any(axis=0)
+    return set(np.nonzero(cols)[0].tolist())
+
+
+def progress_changed(a: np.ndarray, b: np.ndarray, ignore: set[int], thresh: int = 8) -> bool:
+    """True when something other than the ticking columns changed.
+
+    The counter shares its row with a live timer, so raw frame comparison always reports a
+    change.  Columns that move while the page is idle are masked out first, and what is
+    left is the "杩涘害: k/N" text.
+    """
+    if a.shape != b.shape:
+        return False
+    d = cv2.absdiff(a, b) > 40
+    if ignore:
+        d[:, sorted(ignore)] = False
+    return int(d.sum()) > thresh
+
+
+def read_progress(img: np.ndarray) -> str:
+    """Raw crop of the progress label; the caller compares it for changes."""
+    return sub(img, PROGRESS).tobytes()
+
+
+
+
+def is_blank(cell: np.ndarray) -> bool:
+    """Reference-panel blank cell: the whole thumbnail is white, centre included."""
+    return _centre_white(cell) >= 0.995
+
+
+BG_LEVEL = 18.0          # the tray background is (9, 9, 9); the border line is ~10-14
+
+
+def _bg_share(a: np.ndarray) -> float:
+    return 0.0 if a.size == 0 else float((a < BG_LEVEL).mean())
+
+
+def flat_sides(img: np.ndarray, box: tuple[int, int, int, int]) -> dict[str, str]:
+    """Per side: 'flat' (straight frame edge), 'tab' (protruding), 'notch' (carved in).
+
+    The site cuts real jigsaw pieces (PieceCutter: tabSize = 0.22*min(w,h), margin =
+    1.5*tabSize), so a piece on the board frame has a straight side there.  Measured
+    from the tray: a tab shows content 3-13 px *outside* the body, a notch shows pure
+    tray background 3-12 px *inside* it, and a flat side shows neither.  Decision is by
+    share of background pixels, not brightness: the piece carries a photo, which may be
+    darker than the tray itself.
+    """
+    x, y, w, h = box
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    x1, x2 = x + w // 3, x + 2 * w // 3
+    y1, y2 = y + h // 3, y + 2 * h // 3
+
+    def kind(inner_bg: float, outer_bg: float) -> str:
+        if inner_bg > 0.5:
+            return "notch"
+        if outer_bg < 0.5:
+            return "tab"
+        return "flat"
+
+    return {
+        "top": kind(_bg_share(g[y + 3:y + 12, x1:x2]),
+                    _bg_share(g[max(0, y - 13):y - 3, x1:x2])),
+        "bottom": kind(_bg_share(g[y + h - 12:y + h - 3, x1:x2]),
+                       _bg_share(g[y + h + 3:y + h + 13, x1:x2])),
+        "left": kind(_bg_share(g[y1:y2, x + 3:x + 12]),
+                     _bg_share(g[y1:y2, max(0, x - 13):x - 3])),
+        "right": kind(_bg_share(g[y1:y2, x + w - 12:x + w - 3]),
+                      _bg_share(g[y1:y2, x + w + 3:x + w + 13])),
+    }
+
+
+def is_real_piece(img: np.ndarray, box: tuple[int, int, int, int]) -> bool:
+    """Reject slot boxes that are really a neighbour's tab bleeding over the gap."""
+    x, y, w, h = box
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    core = g[y + h // 4:y + 3 * h // 4, x + w // 4:x + 3 * w // 4]
+    return _bg_share(core) <= 0.25
+
+
+def _centre_white(cell: np.ndarray) -> float:
+    """Share of near-white pixels in the middle half of the cell."""
+    g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    h, w = g.shape
+    core = g[h // 4:3 * h // 4, w // 4:3 * w // 4]
+    return 0.0 if core.size == 0 else float((core > 190).mean())
+
+
+def is_white_piece(cell: np.ndarray) -> bool:
+    """White decoy piece: the *centre* is white, not just the background.
+
+    Measured on a real tray: the five decoys all score 1.00 on the middle half, while
+    product photos shot on white (desktop computer, cup, suitcase) score 0.02-0.70
+    because the object sits in the middle.  A plain "share of white pixels" test cannot
+    tell those apart -- it flagged 10 pieces where only 5 exist.
+    """
+    return _centre_white(cell) >= 0.995
+
+
+
+class Classifier:
+    """YOLO11s-cls with a flip/scale ensemble for stability."""
+
+    def __init__(self, weights: Path = WEIGHTS, imgsz: tuple[int, ...] = (160, 224)) -> None:
+        from ultralytics import YOLO
+        self.model = YOLO(str(weights))
+        self.names = self.model.names
+        self.imgsz = imgsz
+
+    def probs(self, cell: np.ndarray) -> np.ndarray:
+        out = []
+        for size in self.imgsz:
+            for flip in (False, True):
+                view = cv2.flip(cell, 1) if flip else cell
+                res = self.model.predict(view, imgsz=size, verbose=False)[0]
+                out.append(res.probs.data.cpu().numpy())
+        return np.mean(out, axis=0)
+
+    def label(self, cell: np.ndarray) -> tuple[str, float]:
+        if is_blank(cell):
+            return BLANK, 1.0
+        p = self.probs(cell)
+        return str(self.names[int(p.argmax())]), float(p.max())
+
+
+def find_reference(img: np.ndarray) -> Rect:
+    """Right-hand reference panel: the largest bright blob right of the board.
+
+    Detected rather than hard coded because the page shifts a few pixels between
+    games; the measured box (1435, 517, 451, 339) is the fallback.
+    """
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    bright = cv2.morphologyEx((g > 150).astype(np.uint8), cv2.MORPH_CLOSE,
+                              np.ones((9, 9), np.uint8))
+    n, _lab, stats, _cent = cv2.connectedComponentsWithStats(bright)
+    best = None
+    for i in range(1, n):
+        x, y, w, h, area = (int(v) for v in stats[i][:5])
+        if x < 900 or w < 200 or area < 30000:
+            continue
+        if not 1.2 <= w / h <= 1.45:
+            continue
+        if best is None or area > best[4]:
+            best = (x, y, w, h, area)
+    return Rect(*best[:4]) if best else Rect(*REFERENCE)
+
+
+def reference_grid(img: np.ndarray, n: int, clf: Classifier) -> list[str]:
+    """Required class per board cell, row-major (index = row * n + col)."""
+    ref = find_reference(img)
+    return [clf.label(sub(img, box))[0] for _r, _c, box in ref.cells(n)]
+PIECE_AREA = 9520          # 112 x 85, the area of one tray piece
+
+
+def tray_pieces(img: np.ndarray) -> list[tuple[str, tuple[int, int, int, int]]]:
+    """Locate tray pieces by connected components.
+
+    The gap-grid works while the tray is full, but once most slots are empty the
+    gaps disappear and the grid cannot be recovered.  Components stay reliable in
+    both cases; blobs that clearly hold two touching pieces are split.
+    """
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    out = []
+    for band in ("left", "right"):
+        x0, x1, y0, y1 = tray_region(img, band)
+        mask = cv2.morphologyEx((g[y0:y1, x0:x1] > 40).astype(np.uint8),
+                                cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        n, _lab, stats, _cent = cv2.connectedComponentsWithStats(mask)
+        for i in range(1, n):
+            x, y, w, h, area = (int(v) for v in stats[i][:5])
+            if area < PIECE_AREA * 0.45:
+                continue
+            count = max(1, round(area / PIECE_AREA))
+            step = (w if w >= h else h) / count
+            for k in range(count):
+                if w >= h:
+                    bx, by, bw, bh = x0 + x + int(k * step), y0 + y, int(step), h
+                else:
+                    bx, by, bw, bh = x0 + x, y0 + y + int(k * step), w, int(step)
+                out.append((band, (bx, by, bw, bh)))
+    return out
+
+
+def board_filled(img: np.ndarray, n: int) -> list[bool]:
+    """A board cell is filled once it shows a photo instead of the dark placeholder.
+
+    Measured: the placeholder sits at mean 23-27 (a few cells carry a faint ghost,
+    std up to 30), while the darkest real piece still averages 73 -- so the board
+    needs a brightness test, not the flatness test used for tray slots.
+    """
+    board = layout(img)[1]
+    out = []
+    for _r, _c, box in board.cells(n):
+        g = cv2.cvtColor(sub(img, box), cv2.COLOR_BGR2GRAY)
+        out.append(float(g.mean()) >= BOARD_FILLED_LEVEL)
+    return out
+
+
+# ---- progress counter: the only authoritative success signal -----------------
+# "杩涘害: k/N" sits just above the reference panel; k increases exactly once per piece
+# that is dropped on its own cell, so a change in this crop *is* the verdict.
+PROGRESS_REL = (-235, -292, 470, 44)     # the whole "杩涘害: k/N" text row, relative to the reference panel
+
+
+def progress_box(img: np.ndarray) -> tuple[int, int, int, int]:
+    ref = find_reference(img)
+    dx, dy, w, h = PROGRESS_REL
+    x, y = ref.x + dx, ref.y + dy
+    x = max(0, min(x, img.shape[1] - w))
+    y = max(0, min(y, img.shape[0] - h))
+    return x, y, w, h
+
+
+def progress_crop(img: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(sub(img, progress_box(img)), cv2.COLOR_BGR2GRAY)
+
+
+def ticking_columns(a: np.ndarray, b: np.ndarray, thresh: int = 30) -> set[int]:
+    """Columns that change on their own (the running timer sits on the same text row)."""
+    if a.shape != b.shape:
+        return set()
+    cols = (cv2.absdiff(a, b) > 40).any(axis=0)
+    return set(np.nonzero(cols)[0].tolist())
+
+
+def progress_changed(a: np.ndarray, b: np.ndarray, ignore: set[int], thresh: int = 8) -> bool:
+    """True when something other than the ticking columns changed.
+
+    The counter shares its row with a live timer, so raw frame comparison always reports a
+    change.  Columns that move while the page is idle are masked out first, and what is
+    left is the "杩涘害: k/N" text.
+    """
+    if a.shape != b.shape:
+        return False
+    d = cv2.absdiff(a, b) > 40
+    if ignore:
+        d[:, sorted(ignore)] = False
+    return int(d.sum()) > thresh
+
+
+def read_progress(img: np.ndarray) -> str:
+    """Raw crop of the progress label; the caller compares it for changes."""
+    return sub(img, PROGRESS).tobytes()
+
+
+

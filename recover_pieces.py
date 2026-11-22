@@ -42,7 +42,6 @@ def blobs(img, ref, board):
     m = (g > 55).astype(np.uint8)
     m[:150, :] = 0
     m[ref.y - 10:ref.y + ref.h + 10, ref.x - 10:ref.x + ref.w + 10] = 0
-    m[board.y + 8:board.y + board.h - 8, board.x + 8:board.x + board.w - 8] = 0
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
     n, _lab, st, _ce = cv2.connectedComponentsWithStats(m)
     out = []
@@ -77,7 +76,7 @@ def main() -> int:
         shot = mouse.shot()
         cv2.imwrite(str(SHOTS / f"recover_{rnd}.png"), shot)
         found = blobs(shot, ref, board)
-        print(f"\nround {rnd}: {len(found)} blob(s) outside the board and the panel")
+        print(f"\nround {rnd}: {len(found)} blob(s) (board included: a locked piece cannot be lifted, so pressing it costs nothing)")
         if not found:
             break
         acted = 0
@@ -98,7 +97,7 @@ def main() -> int:
             shot2 = mouse.shot()
             slots = [b for band in ("left", "right")
                      for _r, _c, b in vision.lattice_slots(shot2, band, rows=6, top_rel=-182)]
-            free = [b for b in slots if not vision.has_piece(vision.sub(shot2, b))]
+            free = [b for b in slots if not vision.has_piece(vision.sub(shot2, b), 20)]
             if not free:
                 print("  no empty slot -- releasing where it is")
                 mouse.release()
@@ -112,7 +111,7 @@ def main() -> int:
             mouse.release()
             time.sleep(0.25)
             check = mouse.shot()
-            landed = vision.has_piece(vision.sub(check, free[0]))
+            landed = vision.has_piece(vision.sub(check, free[0]), 20)
             print(f"    verified: slot holds a piece = {landed}")
             moved += 1
             acted += 1
@@ -124,8 +123,8 @@ def main() -> int:
     cv2.imwrite(str(SHOTS / "recover_end.png"), final)
     slots = [b for band in ("left", "right")
              for _r, _c, b in vision.lattice_slots(final, band, rows=6, top_rel=-182)]
-    occ = sum(1 for b in slots if vision.has_piece(vision.sub(final, b)))
-    filled = sum(1 for _r, _c, b in board.cells(5) if vision.has_piece(vision.sub(final, b)))
+    occ = sum(1 for b in slots if vision.has_piece(vision.sub(final, b), 20))
+    filled = sum(1 for _r, _c, b in board.cells(5) if vision.has_piece(vision.sub(final, b), 20))
     print(f"\npieces parked: {moved}")
     print(f"tray slots holding a piece: {occ} of {len(slots)}")
     print(f"board cells holding a piece: {filled} of 25")

@@ -58,7 +58,8 @@ def main() -> int:
         shot = mouse.shot()
         return [b for b in slots if vision.is_empty(vision.sub(shot, b))]
 
-    bright = {k: mean_at(img, b) for k, b in boxes.items() if mean_at(img, b) >= 45}
+    bright = {k: mean_at(img, b) for k, b in boxes.items()
+          if vision.has_piece(vision.sub(img, b), 20)}
     print(f"cells showing a photo: {len(bright)}")
     for k, v in sorted(bright.items()):
         print(f"  ({k}) mean {v:.0f}")

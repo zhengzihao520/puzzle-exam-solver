@@ -27,7 +27,9 @@ import time
 from collections import Counter
 
 import cv2
+import numpy as np
 
+import fingerprint as fp
 import jigsaw
 import probe_edges as pe
 import vision
@@ -87,6 +89,7 @@ class Run:
         self.placed: set[str] = set()      # cells confirmed locked
         self.used: set[str] = set()        # pieces already delivered
         self.refusals: list[tuple] = []
+        self.tpl: dict[str, np.ndarray | None] = {}   # piece identity, not slot identity
         self.piece_cls: dict[str, str] = {}
         self.cell_cls: dict[str, str] = {}
 
@@ -118,6 +121,7 @@ class Run:
             res = idf.identify(vision.sub(self.img, slot))
             cls[key] = res.label
             box[key] = slot
+            self.tpl[key] = fp.template(self.img, slot)
             print(f"  piece({key}) {res}")
         return cls, box
 
@@ -206,20 +210,40 @@ class Run:
         self.mouse.release()
         return True
 
+    def locate(self, piece: str, boxes: dict[str, tuple]) -> tuple | None:
+        """Where is this piece *now*?  Its fingerprint answers, not the remembered slot."""
+        kind, box, score = fp.where(self.mouse.shot(), self.tpl.get(piece),
+                                    [b for b in boxes.values()], preferred=boxes.get(piece))
+        if kind in ("slot", "loose"):
+            if kind == "loose":
+                print(f"    {piece} had slipped to ({box[0]},{box[1]}) -- tracked by fingerprint")
+            boxes[piece] = box
+            return box
+        print(f"    {piece}: fingerprint not found anywhere (best {score:.2f})")
+        return None
+
     def deliver(self, piece: str, cell: str, boxes: dict[str, tuple]) -> bool:
-        slot = boxes[piece]
+        slot = self.locate(piece, boxes)
+        if slot is None:
+            self.used.add(piece)
+            return False
         sx, sy = centre(slot)
         self.mouse.grab_at((sx, sy))
         self.mouse.glide((sx + 96, sy + 74))
         time.sleep(0.15)
-        if not vision.is_empty(vision.sub(self.mouse.shot(), slot)):
+        if fp.score_at(self.mouse.shot(), self.tpl.get(piece), slot) > 0.8:
             self.mouse.release()
-            print(f"    {piece}: not in its slot any more")
+            print(f"    {piece}: did not come away from ({slot[0]},{slot[1]})")
             return False
         self.mouse.glide(centre(self.cells[cell]))
         time.sleep(0.16)
         self.mouse.release()
         self.moves += 1
+        here = fp.score_at(self.mouse.shot(), self.tpl.get(piece), self.cells[cell])
+        if here < 0.8:
+            print(f"    {piece} did not arrive at cell({cell}) (fingerprint {here:.2f})")
+            self.refusals.append((piece, cell, self.piece_cls.get(piece), self.cell_cls.get(cell)))
+            return False
         if self.locked(cell):
             self.placed.add(cell)
             self.used.add(piece)
@@ -243,10 +267,10 @@ class Run:
         shot = self.mouse.shot()
         own = boxes.get(piece)
         target = None
-        if own is not None and not vision.has_piece(vision.sub(shot, own)):
+        if own is not None and not vision.has_piece(vision.sub(shot, own), 20):
             target = own
         else:
-            free = [b for b in self.slots if not vision.has_piece(vision.sub(shot, b))]
+            free = [b for b in self.slots if not vision.has_piece(vision.sub(shot, b), 20)]
             if free:
                 target = free[0]
         if target is None:
@@ -257,10 +281,19 @@ class Run:
         self.mouse.release()
         self.moves += 1
         time.sleep(0.2)
-        landed = vision.has_piece(vision.sub(self.mouse.shot(), target))
-        boxes[piece] = target
-        if not landed:
-            print(f"    WARNING: {piece} did not land in ({target[0]},{target[1]})")
+        shot = self.mouse.shot()
+        if fp.score_at(shot, self.tpl.get(piece), target) >= 0.8:
+            boxes[piece] = target
+            return
+        # it did not land where aimed: let the fingerprint say where it actually is
+        kind, found, score = fp.where(shot, self.tpl.get(piece), [b for b in self.slots],
+                                      preferred=target)
+        if kind in ("slot", "loose"):
+            boxes[piece] = found
+            print(f"    {piece} landed {'in slot' if kind == 'slot' else 'loose'} at "
+                  f"({found[0]},{found[1]}) score {score:.2f} -- noted")
+        else:
+            print(f"    WARNING: {piece} is lost (best fingerprint {score:.2f})")
 
 
 def main() -> int:
