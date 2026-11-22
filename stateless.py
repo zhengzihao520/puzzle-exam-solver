@@ -249,7 +249,17 @@ def main() -> int:
     tried: set[tuple[str, str]] = set()   # (piece, cell) pairs already attempted
     relocations = 0
 
-    for attempt in range(2):
+    # Seed what is already done: the ring walk must not re-play finished cells.  Locked cells
+    # cost no move (the engine will not lift them), so this is free and it makes the visible
+    # order honest -- every printed cell is one that actually received a piece now.
+    start_snap = Snap(mouse.shot())
+    for k in list(start_snap.cells):
+        if vision.has_piece(vision.sub(start_snap.img, start_snap.cells[k]), 30) and \
+                press_is_locked(mouse, start_snap.cells[k]):
+            confirmed[k] = "(already locked)"
+    print(f"\n{len(confirmed)} cell(s) were already locked; walking the ring over the rest")
+
+    for attempt in range(1):
         progress = 0
         for r, c in ring_order(N):
             if moves >= args.max_moves:
@@ -271,6 +281,9 @@ def main() -> int:
             order = [k for k in order if (k, key) not in tried]
             if not order:
                 order = [k for k in pieces.spare(wanted) if (k, key) not in tried][:1]
+            if not order:
+                print(f"    cell({key}) {wanted}: no piece of that class left -- cell left empty")
+                continue
             done = False
             for pk in order[:1]:
                 if moves >= args.max_moves:
