@@ -86,6 +86,9 @@ class Run:
         self.moves = 0
         self.placed: set[str] = set()      # cells confirmed locked
         self.used: set[str] = set()        # pieces already delivered
+        self.refusals: list[tuple] = []
+        self.piece_cls: dict[str, str] = {}
+        self.cell_cls: dict[str, str] = {}
 
     # ---- reading -----------------------------------------------------------
     def read_cells(self, idf: Identifier) -> dict[str, str]:
@@ -136,7 +139,7 @@ class Run:
             time.sleep(0.22)
             shot = self.mouse.shot()
             cv2.imwrite(str(SHOTS / f"run_edge_{i:02d}.png"), shot)
-            edges = pe.read_edges(shot, self.blank_box)
+            edges = pe.read_edges_union(shot, self.blank_box)
             out[key] = edges
             if all(v is None for v in edges.values()):
                 tag = "unknown (reading broke the rules)"
@@ -160,9 +163,9 @@ class Run:
             inner = vision.sub(self.img, box)
             h, w = inner.shape[:2]
             middle = inner[h // 4:h - h // 4, w // 4:w - w // 4]
-            # the middle half is what a cell's own piece covers; a neighbour's tab only
-            # reaches the edge, and testing the whole box called empty cells occupied
-            if float(cv2.cvtColor(middle, cv2.COLOR_BGR2GRAY).mean()) < 45:
+            # a dark photo and an empty placeholder share a brightness, so this asks for
+            # texture, not for light
+            if not vision.has_piece(middle):
                 continue
             if self.locked(key):
                 self.placed.add(key)
@@ -180,18 +183,27 @@ class Run:
                    for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)))
 
     def locked(self, cell: str) -> bool:
-        """Five presses inside the piece box: a loose piece cannot survive five misses."""
-        cx, cy = centre(self.cells[cell])
-        for dx, dy in PROBE_POINTS:
-            pt = (cx + dx, cy + dy)
-            before = cell_mean(self.mouse.shot(), self.cells[cell])
-            self.mouse.grab_at(pt)
-            self.mouse.glide((pt[0] + 62, pt[1] + 38))
-            time.sleep(0.16)
-            after = cell_mean(self.mouse.shot(), self.cells[cell])
-            if after < before - 25 or after < 35:
-                return False                  # still holding it
-            self.mouse.release()
+        """One press at the cell centre: does the engine hold the piece?
+
+        A placed piece is skipped by hit testing, so pressing it and nudging changes nothing.
+        A loose piece that was just dropped with its box centred on the cell centre cannot be
+        missed by that press, so one press decides -- the earlier version pressed five points
+        and spent five presses per verification on pieces that were already locked, which is
+        what made the run look like it kept grabbing finished pieces.
+        """
+        box = self.cells[cell]
+        shot = self.mouse.shot()
+        if not vision.has_piece(vision.sub(shot, box)):
+            return False                      # nothing landed there at all
+        before = cell_mean(shot, box)
+        cx, cy = centre(box)
+        self.mouse.grab_at((cx, cy))
+        self.mouse.glide((cx + 62, cy + 38))
+        time.sleep(0.18)
+        after = cell_mean(self.mouse.shot(), box)
+        if after < before - 25 or after < 35:
+            return False                      # it followed the pointer: still in hand
+        self.mouse.release()
         return True
 
     def deliver(self, piece: str, cell: str, boxes: dict[str, tuple]) -> bool:
@@ -214,7 +226,9 @@ class Run:
             print(f"    {piece} -> cell({cell})   [move {self.moves}]  locked  "
                   f"{len(self.placed)}/{N * N}")
             return True
-        print(f"    {piece} -> cell({cell})   [move {self.moves}]  refused")
+        self.refusals.append((piece, cell, self.piece_cls.get(piece), self.cell_cls.get(cell)))
+        print(f"    {piece} ({self.piece_cls.get(piece)}) -> cell({cell}) "
+              f"(wants {self.cell_cls.get(cell)})  [move {self.moves}]  refused")
         return False
 
     def park(self, boxes: dict[str, tuple], piece: str) -> None:
@@ -230,6 +244,8 @@ def main() -> int:
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--go", action="store_true")
     ap.add_argument("--no-edges", action="store_true")
+    ap.add_argument("--fallback", action="store_true",
+                    help="try the leftovers when no class match works (brute force)")
     ap.add_argument("--delay", type=float, default=0.0)
     ap.add_argument("--max-moves", type=int, default=90)
     args = ap.parse_args()
@@ -281,6 +297,8 @@ def main() -> int:
     broken = jigsaw.violations(cell_cls, pieces, sol.assignment, n=N)
     print(f"\nassignment: {len(sol.assignment)} cells, {broken} rule(s) broken, "
           f"{len(sol.unused)} piece(s) left over")
+    run.piece_cls = dict(cls)
+    run.cell_cls = dict(cells)
     ring = order_ring(N)
     for cell in ring:
         key = f"{cell[0]},{cell[1]}"
@@ -325,7 +343,7 @@ def main() -> int:
                 # classifier filed under the wrong class.  Fall back to trying the leftovers
                 # -- but only when few are left, so this never becomes a brute force.
                 spare = [p for p in pieces if p not in run.used]
-                if len(spare) <= 10:
+                if args.fallback and len(spare) <= 10:
                     cands = [(p, 99) for p in spare]
                     print(f"\ncell({cell}) wants {cells[cell]} -- no class match, "
                           f"trying the {len(spare)} leftovers")
@@ -345,7 +363,7 @@ def main() -> int:
             # Even a class match can be wrong: the classifier can put a cell's piece under
             # another class, in which case the right piece is sitting among the leftovers.
             # Try those too, but only when few are left, so this never becomes brute force.
-            if not placed_here and run.moves < args.max_moves:
+            if (args.fallback and not placed_here and run.moves < args.max_moves):
                 spare = [p for p in pieces if p not in run.used]
                 if 0 < len(spare) <= 10:
                     print(f"  no class match worked; trying {len(spare)} leftovers")

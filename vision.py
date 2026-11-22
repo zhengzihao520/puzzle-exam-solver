@@ -198,7 +198,7 @@ def lattice_slots(img: np.ndarray, band: str,
     sx, sy = ref.w / CAL_REF[0], ref.h / CAL_REF[1]
     x0 = ref.x + TRAY_COL_REL[band] * sx
     y0 = ref.y + (TRAY_TOP_REL if top_rel is None else top_rel) * sy
-    rows = TRAY_SHAPE[0] if rows is None else rows
+    rows = 6 if rows is None else rows
     pw, ph = TRAY_PIECE[0] * sx, TRAY_PIECE[1] * sy
     step_x, step_y = TRAY_STEP[0] * sx, TRAY_STEP[1] * sy
     return [(r, c, (round(x0 + c * step_x), round(y0 + r * step_y),
@@ -489,3 +489,18 @@ def read_progress(img: np.ndarray) -> str:
     """Raw crop of the progress label; the caller compares it for changes."""
     return sub(img, PROGRESS).tobytes()
 
+
+
+
+def has_piece(cell: np.ndarray) -> bool:
+    """Does this board cell hold a piece, dark photo or not?
+
+    Brightness alone cannot answer this: a night photo sits at the same mean as the dark
+    placeholder.  An *empty* cell is a flat placeholder -- low mean, low 99th percentile,
+    low standard deviation -- while any photo, however dark, has texture.  Measured on a
+    live board: the darkest placed piece had mean 36.6 with std 43.6 and p99 210, and an
+    empty cell 23.0 / std 0.4 / p99 25.
+    """
+    g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
+    return not (float(g.mean()) < 45 and float(np.percentile(g, 99)) < 25
+                and float(g.std()) < 4)

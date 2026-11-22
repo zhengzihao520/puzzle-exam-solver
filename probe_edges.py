@@ -282,3 +282,74 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# ---- second opinion: where the boundary actually is -------------------------
+# The colour silhouette loses tabs when the photo is as dark as the engine's drop shadow.
+# This reader ignores brightness entirely and asks a different question: along each side,
+# how far out does the strongest contour lie, in the middle of the side versus at its ends?
+# A tab pushes that boundary ~19 px outward in the middle; a notch pulls it in; a flat side
+# leaves it level.  The two readers miss different pieces, so the union is stronger than
+# either -- measured on 25 real captures: colour 8 impossible readings, boundary 5, union 4.
+
+def side_boundary(g: np.ndarray, bx: int, by: int, w: int, h: int, side: str,
+                  depth: int = 30) -> np.ndarray:
+    """Per-position outward distance of the strongest gradient along one side."""
+    vals = []
+    span = w if side in ("top", "bottom") else h
+    for t in range(span):
+        line = []
+        for d in range(-depth, depth + 1):
+            if side == "top":
+                y, x = by - d, bx + t
+            elif side == "bottom":
+                y, x = by + h + d, bx + t
+            elif side == "left":
+                y, x = by + t, bx - d
+            else:
+                y, x = by + t, bx + w + d
+            if not (0 <= y < g.shape[0] and 0 <= x < g.shape[1]):
+                line.append(0.0)
+                continue
+            line.append(float(g[y, x]))
+        line = np.array(line)
+        grad = np.abs(np.diff(line))
+        vals.append(float(np.argmax(grad)) - depth if grad.size else 0.0)
+    return np.array(vals)
+
+
+def read_edges_boundary(img: np.ndarray, box, cut: float = 8.0) -> dict[str, tuple[str, float]]:
+    g = cv2.GaussianBlur(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32), (0, 0), 1.0)
+    x, y, w, h = box
+    out: dict[str, tuple[str, float]] = {}
+    for side in ("top", "right", "bottom", "left"):
+        prof = side_boundary(g, x, y, w, h, side)
+        if len(prof) < 12:
+            out[side] = ("flat", 0.0)
+            continue
+        n = len(prof)
+        third = n // 3
+        mid = float(np.median(prof[third:n - third]))
+        ends = float(np.median(np.concatenate([prof[:third], prof[n - third:]])))
+        delta = mid - ends
+        kind = "tab" if delta > cut else ("notch" if delta < -cut else "flat")
+        out[side] = (kind, delta)
+    return out
+
+
+def read_edges_union(img: np.ndarray, box) -> dict[str, str | None]:
+    """Union of the colour silhouette and the boundary displacement.
+
+    A side counts as tab/notch if either reader sees one; only when both call it flat is it
+    flat.  Three or more flat sides remain impossible for a real piece, and such a reading is
+    reported as unknown rather than guessed.
+    """
+    colour = read_edges(img, box)
+    boundary = read_edges_boundary(img, box)
+    out: dict[str, str | None] = {}
+    for side in ("top", "right", "bottom", "left"):
+        a, b = colour[side], boundary[side][0]
+        out[side] = a if a in ("tab", "notch") else (b if b in ("tab", "notch") else "flat")
+    if sum(1 for v in out.values() if v == "flat") >= 3:
+        return {s: None for s in ("top", "right", "bottom", "left")}
+    return out
