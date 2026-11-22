@@ -77,21 +77,28 @@ def seam_cost(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> tuple[float
 
 
 def apply_cut_constraint(cr, cd, piece_edges: dict[int, tuple], weight: float = 3.0) -> None:
-    """Add the engine's hard rule as a heavy penalty: a tab must meet a notch.
+    """Add the engine's rule as a penalty: a tab must meet a notch.
 
     Measured reason this matters more than the pixels: seam continuity alone identified the true
     neighbour 19/20 on one photo but 6/20 and 7/20 on two others (flat, low-contrast photos),
     while six synthetic games all assembled perfectly (25/25) once the cut signs were applied.
     The signs do not care about colour, exposure or blur.
+    A side that could not be read (None) is not evidence of anything and is skipped -- charging
+    it as a mismatch would punish every pair involving one unread edge equally and quietly turn
+    the reader's blind spots into instructions.  A *flat* side (0) is the opposite: it is real
+    evidence, because only a border piece has one, so the product test below keeps it out of
+    every interior position.
     """
     n = cr.shape[0]
     for i in range(n):
         for j in range(n):
             if i == j:
                 continue
-            if piece_edges[i][1] * piece_edges[j][3] != -1:      # i.right vs j.left
+            r_i, l_j = piece_edges[i][1], piece_edges[j][3]       # i.right vs j.left
+            if r_i is not None and l_j is not None and r_i * l_j != -1:
                 cr[i, j] += weight
-            if piece_edges[i][2] * piece_edges[j][0] != -1:      # i.bottom vs j.top
+            b_i, t_j = piece_edges[i][2], piece_edges[j][0]       # i.bottom vs j.top
+            if b_i is not None and t_j is not None and b_i * t_j != -1:
                 cd[i, j] += weight
 
 
@@ -266,20 +273,20 @@ def synth_game(photo: np.ndarray, rng: random.Random, classes: int = 8):
     return pieces, cell_cls, piece_cls, piece_edges, truth
 
 
-def _score(assign: dict, truth: dict) -> int:
-    return sum(1 for cell, i in assign.items() if truth.get(cell) == i)
-
-
 def _corrupt(piece_edges: dict[int, tuple], p: float, rng: random.Random):
-    """Simulate the tray reader: each side may come back unknown or wrong."""
+    """Simulate the tray reader: each side may come back unread (None) or simply wrong."""
     out = {}
     for i, e in piece_edges.items():
         s = list(e)
         for k in range(4):
             if rng.random() < p:
-                s[k] = 0 if rng.random() < 0.5 else -s[k]
+                s[k] = None if rng.random() < 0.5 else -s[k]
         out[i] = tuple(s)
     return out
+
+
+def _score(assign: dict, truth: dict) -> int:
+    return sum(1 for cell, i in assign.items() if truth.get(cell) == i)
 
 
 def main() -> int:
