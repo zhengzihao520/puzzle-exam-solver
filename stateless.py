@@ -195,28 +195,31 @@ def main() -> int:
 
     edges: dict[str, dict] = {k: {s: None for s in SIDES} for k in pieces.tpl}
     if args.edges and args.go:
-        print(f"\nreading {len(pieces.tpl)} cuts ({len(pieces.tpl)} moves)")
+        print(f"\nreading {len(list(pieces.tpl))} cuts (one move each: lifted, photographed, put back)")
         for i, key in enumerate(list(pieces.tpl)):
             snap = Snap(mouse.shot())
-            box, sc = locate(snap, pieces.tpl[key])
+            box, _sc = locate(snap, pieces.tpl[key])
             if box is None:
+                print(f"  {key}: not visible, cut unknown")
                 continue
+            empty = [k2 for k2 in snap.cells if not snap.cell_has_piece(k2)]
+            spot = centre(snap.cells[empty[i % len(empty)]]) if empty else (713, 665)
             sx, sy = centre(box)
             mouse.grab_at((sx, sy))
             mouse.glide((sx + 96, sy + 74))
-            time.sleep(0.15)
+            time.sleep(0.14)
             if fp.score_at(mouse.shot(), pieces.tpl[key], box) > 0.8:
                 mouse.release()
+                print(f"  {key}: did not come away, cut unknown")
                 continue
-            empty = [b for b in snap.cells.values() if not snap.cell_has_piece(
-                next(k for k, v in snap.cells.items() if v == b))] or []
-            spot = centre(empty[0]) if empty else (713, 665)
-            mouse.glide(spot)
+            mouse.glide(spot)                      # hold it over an empty cell: isolated
             time.sleep(0.22)
             shot = mouse.shot()
+            cv2.imwrite(str(SHOTS / f"cut_{i:02d}.png"), shot)
             edges[key] = pe.read_edges_union(shot, (spot[0] - 56, spot[1] - 42, 112, 85))
-            print(f"  {key} {edges[key]}")
-            mouse.glide((sx, sy))
+            mark = " ".join(f"{s0[0]}{edges[key][s0] or '?'}" for s0 in SIDES)
+            print(f"  {key} ({pieces.cls[key]}) {mark}   [{i + 1}/{len(list(pieces.tpl))}]")
+            mouse.glide((sx, sy))                  # put it back where it was
             mouse.release()
             time.sleep(0.12)
 
@@ -243,6 +246,7 @@ def main() -> int:
     moves = 0
     confirmed: dict[str, str] = {}      # cell -> piece, verified locked
     refused: Counter = Counter()
+    tried: set[tuple[str, str]] = set()   # (piece, cell) pairs already attempted
     relocations = 0
 
     for attempt in range(2):
@@ -264,8 +268,9 @@ def main() -> int:
             # the single best spare of that class.  Trying several per cell is what turned
             # the pass into a sweep.
             order = ([plan[key]] if key in plan and plan[key] not in pieces.used else [])
+            order = [k for k in order if (k, key) not in tried]
             if not order:
-                order = [k for k in pieces.spare(wanted)][:1]
+                order = [k for k in pieces.spare(wanted) if (k, key) not in tried][:1]
             done = False
             for pk in order[:1]:
                 if moves >= args.max_moves:
@@ -289,7 +294,11 @@ def main() -> int:
                 moves += 1
                 after = Snap(mouse.shot())
                 here = fp.score_at(after.img, pieces.tpl[pk], after.cells[key])
-                if here >= fp.GOOD and press_is_locked(mouse, after.cells[key]):
+                # Credit a placement by the engine's own behaviour (it will not lift a placed
+                # piece), not by the fingerprint: the fingerprint told the truth only 2 times
+                # out of 8 the engine had in fact locked, which then cost a second attempt on
+                # an already-finished cell.
+                if press_is_locked(mouse, after.cells[key]):
                     confirmed[key] = pk
                     pieces.used.add(pk)
                     progress += 1
@@ -298,6 +307,7 @@ def main() -> int:
                     done = True
                     break
                 refused[(pieces.cls[pk], wanted)] += 1
+                tried.add((pk, key))
                 print(f"    {pk} ({pieces.cls[pk]}) -> cell({key}) wanted {wanted}  "
                       f"[move {moves}]  refused (fingerprint {here:.2f})")
                 # The user's rule, and the right one: the board never keeps a wrong piece.
