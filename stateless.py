@@ -245,7 +245,7 @@ def main() -> int:
     refused: Counter = Counter()
     relocations = 0
 
-    for attempt in range(4):
+    for attempt in range(2):
         progress = 0
         for r, c in ring_order(N):
             if moves >= args.max_moves:
@@ -260,12 +260,14 @@ def main() -> int:
             if not anchored:
                 continue
             wanted = cells[key]
+            # exactly one piece is offered for this cell in this pass: the planned one, or
+            # the single best spare of that class.  Trying several per cell is what turned
+            # the pass into a sweep.
             order = ([plan[key]] if key in plan and plan[key] not in pieces.used else [])
-            order += [k for k in pieces.spare(wanted) if k not in order]
             if not order:
-                order = pieces.spare()[:3]            # nothing of that class left
+                order = [k for k in pieces.spare(wanted)][:1]
             done = False
-            for pk in order[:6]:
+            for pk in order[:1]:
                 if moves >= args.max_moves:
                     break
                 box, sc = locate(snap, pieces.tpl[pk])
@@ -298,7 +300,21 @@ def main() -> int:
                 refused[(pieces.cls[pk], wanted)] += 1
                 print(f"    {pk} ({pieces.cls[pk]}) -> cell({key}) wanted {wanted}  "
                       f"[move {moves}]  refused (fingerprint {here:.2f})")
-                # no parking: the next snapshot will see this piece wherever it now lies
+                # The user's rule, and the right one: the board never keeps a wrong piece.
+                # Take it straight back to a slot that is empty in this very photograph.
+                after = Snap(mouse.shot())
+                free = [b for b in after.slots if not after.slot_has_piece(b)]
+                if free:
+                    mouse.grab_at(centre(after.cells[key]))
+                    mouse.glide(centre(free[0]))
+                    mouse.release()
+                    moves += 1
+                    time.sleep(0.18)
+                    print(f"      -> taken back to slot ({free[0][0]},{free[0][1]})  "
+                          f"[move {moves}]")
+                else:
+                    print("      -> no empty slot to take it back to")
+                break            # one piece per cell per pass: no candidate roulette
         if progress == 0:
             print("  no progress in this pass")
             break
