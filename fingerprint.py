@@ -22,7 +22,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-TW, TH = 32, 24          # template size
+TW, TH = 48, 36          # template size (colour: three channels)
 GOOD = 0.80              # score that means "this is that piece"
 
 
@@ -36,14 +36,12 @@ def template(img: np.ndarray, box) -> np.ndarray | None:
     crop = _crop(img, box)
     if crop.size == 0 or crop.shape[0] < 8 or crop.shape[1] < 8:
         return None
-    g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    g = cv2.resize(g, (TW, TH), interpolation=cv2.INTER_AREA)
-    g = g.astype(np.float32)
-    g -= g.mean()
-    s = float(g.std())
-    if s < 1.0:
-        return None               # flat patch: nothing to recognise
-    return g / s
+    c = cv2.resize(crop, (TW, TH), interpolation=cv2.INTER_AREA).astype(np.float32)
+    c -= c.reshape(-1, 3).mean(axis=0)          # colour carries information grey loses:
+    s = c.reshape(-1, 3).std(axis=0)            # measured cross-piece max 0.481 vs 0.581
+    if float(s.mean()) < 1.0:
+        return None                             # flat patch: nothing to recognise
+    return c / (s + 1e-6)
 
 
 def score_at(img: np.ndarray, tpl: np.ndarray, box) -> float:
@@ -53,14 +51,12 @@ def score_at(img: np.ndarray, tpl: np.ndarray, box) -> float:
     crop = _crop(img, box)
     if crop.size == 0:
         return 0.0
-    g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    g = cv2.resize(g, (TW, TH), interpolation=cv2.INTER_AREA).astype(np.float32)
-    g -= g.mean()
-    s = float(g.std())
-    if s < 1.0:
+    c = cv2.resize(crop, (TW, TH), interpolation=cv2.INTER_AREA).astype(np.float32)
+    c -= c.reshape(-1, 3).mean(axis=0)
+    s = c.reshape(-1, 3).std(axis=0)
+    if float(s.mean()) < 1.0:
         return 0.0
-    g /= s
-    return float((g * tpl).mean())
+    return float((c / (s + 1e-6) * tpl).mean())
 
 
 def find(img: np.ndarray, tpl: np.ndarray, regions: list[tuple[int, int, int, int]] | None = None,

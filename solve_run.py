@@ -211,15 +211,30 @@ class Run:
         return True
 
     def locate(self, piece: str, boxes: dict[str, tuple]) -> tuple | None:
-        """Where is this piece *now*?  Its fingerprint answers, not the remembered slot."""
-        kind, box, score = fp.where(self.mouse.shot(), self.tpl.get(piece),
-                                    [b for b in boxes.values()], preferred=boxes.get(piece))
-        if kind in ("slot", "loose"):
-            if kind == "loose":
-                print(f"    {piece} had slipped to ({box[0]},{box[1]}) -- tracked by fingerprint")
-            boxes[piece] = box
-            return box
-        print(f"    {piece}: fingerprint not found anywhere (best {score:.2f})")
+        """Where is this piece now?  Its fingerprint is compared only at structures.
+
+        Searching continuous space for a template found false peaks: a piece that had moved
+        scored 0.8 somewhere it was not, the grab point was then wrong, and the drop scattered.
+        A piece can only be in a tray slot or on a board cell, so the comparison runs over
+        those 36+25 known boxes -- every one of them an aligned view, where the measured
+        cross-piece score is at most 0.48.
+        """
+        shot = self.mouse.shot()
+        tpl = self.tpl.get(piece)
+        if tpl is None:
+            return None
+        own = boxes.get(piece)
+        if own is not None and fp.score_at(shot, tpl, own) >= fp.GOOD:
+            return own
+        cands = list(self.slots) + list(self.cells.values())
+        scored = [(fp.score_at(shot, tpl, b), b) for b in cands]
+        scored.sort(key=lambda t: -t[0])
+        score, found = scored[0]
+        if score >= fp.GOOD:
+            boxes[piece] = found
+            print(f"    {piece} re-located at ({found[0]},{found[1]}) score {score:.2f}")
+            return found
+        print(f"    {piece}: not in any slot or cell (best {score:.2f})")
         return None
 
     def deliver(self, piece: str, cell: str, boxes: dict[str, tuple]) -> bool:
@@ -286,14 +301,9 @@ class Run:
             boxes[piece] = target
             return
         # it did not land where aimed: let the fingerprint say where it actually is
-        kind, found, score = fp.where(shot, self.tpl.get(piece), [b for b in self.slots],
-                                      preferred=target)
-        if kind in ("slot", "loose"):
-            boxes[piece] = found
-            print(f"    {piece} landed {'in slot' if kind == 'slot' else 'loose'} at "
-                  f"({found[0]},{found[1]}) score {score:.2f} -- noted")
-        else:
-            print(f"    WARNING: {piece} is lost (best fingerprint {score:.2f})")
+        found = self.locate(piece, boxes)
+        if found is None:
+            print(f"    WARNING: {piece} is not on any slot or cell")
 
 
 def main() -> int:
