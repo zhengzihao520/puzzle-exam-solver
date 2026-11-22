@@ -105,7 +105,9 @@ class Pieces:
 
     def __init__(self) -> None:
         self.tpl: dict[str, np.ndarray | None] = {}
+        self.box: dict[str, tuple] = {}
         self.cls: dict[str, str] = {}
+        self.allow: dict[str, frozenset | None] = {}
         self.used: set[str] = set()
 
     def inventory(self, snap: Snap, idf: Identifier, verbose: bool = True) -> None:
@@ -118,12 +120,61 @@ class Pieces:
                 continue
             res = idf.identify(vision.sub(snap.img, box))
             self.tpl[key] = tpl
+            self.box[key] = box
             self.cls[key] = res.label
+            # A doubtful reading is a two-way vote, and half the tray is doubtful (13 of 30 on
+            # the game this was measured on), while the class budget must still be met: five
+            # white cells and only three pieces called white.  Keeping both candidates lets the
+            # cuts and the seams -- which are colour-blind -- settle it instead of a coin flip.
+            self.allow[key] = (frozenset([res.label, *res.alternatives])
+                               if not res.confident else frozenset([res.label]))
             if verbose:
                 print(f"  {key} at ({box[0]},{box[1]})  {res}")
 
     def spare(self, cls: str | None = None) -> list[str]:
-        return [k for k in self.tpl if k not in self.used and (cls is None or self.cls[k] == cls)]
+        """Spare pieces that could be `cls` -- a doubtful piece counts for either reading."""
+        if cls is None:
+            return [k for k in self.tpl if k not in self.used]
+        return [k for k in self.tpl if k not in self.used and
+                (self.allow[k] is None or cls in self.allow[k])]
+
+
+def whiteness(crop: np.ndarray) -> float:
+    """Fraction of a piece's middle half that is near-white and unsaturated.
+
+    Measured on one real tray: the five pure-white pieces scored 1.000 1.000 1.000 0.983 0.973
+    and the next piece 0.550, so this separates them by a wide margin.  A plain mean brightness
+    cannot: the engine's ~20 px drop shadow lands on the piece and puts a white piece's mean
+    (239) inside the range of photos taken on white backgrounds (236).
+    """
+    h, w = crop.shape[:2]
+    mid = crop[h // 4:3 * h // 4, w // 4:3 * w // 4]
+    g = cv2.cvtColor(mid, cv2.COLOR_BGR2GRAY)
+    sat = cv2.cvtColor(mid, cv2.COLOR_BGR2HSV)[:, :, 1]     # 1 = saturation, 2 = value
+    return float(((g > 225) & (sat < 25)).mean())
+
+
+def name_blanks(pieces: "Pieces", img: np.ndarray, want: int,
+                min_frac: float = 0.9) -> int:
+    """Mark the white pieces by rank, since the panel says how many there should be.
+
+    Two of the five white pieces were previously read as desktop and nailong -- both at the
+    bottom of the reader's confidence (0.60 and 0.31), and both with a blank-looking body, so
+    they won a class by default.  The board already knows the answer: k white cells means k
+    white pieces, and the k whitest are the white ones.
+    """
+    ranked = sorted(((whiteness(vision.sub(img, b)), k) for k, b in pieces.box.items()),
+                    reverse=True)
+    marked = 0
+    for frac, k in ranked[:want]:
+        if frac < min_frac:
+            break
+        pieces.cls[k] = BLANK
+        pieces.allow[k] = frozenset([BLANK])
+        marked += 1
+    if marked:
+        print(f"  {marked} piece(s) named {BLANK} by whiteness rank (panel wants {want})")
+    return marked
 
 
 def seam_plan(mouse: Mouse, pieces: "Pieces", cell_cls: dict, edges: dict,
@@ -162,9 +213,24 @@ def seam_plan(mouse: Mouse, pieces: "Pieces", cell_cls: dict, edges: dict,
     piece_edges = {i: tuple(EDGE_SIGN[edges[k].get(s)] for s in SIDES)
                    for i, k in enumerate(kept)}
     known = sum(1 for e in piece_edges.values() if None not in e)
+    # A doubtful piece may stand in for either of its two readings, but only where that is
+    # actually needed.  Left free, the seam cost happily used a doubtful dog as the penguin --
+    # penguin was already well supplied -- and the dog cell it should have filled stayed empty.
+    wanted = set(cell_cls.values())
+    need = Counter(cell_cls.values())
+    have = Counter(pieces.cls[k] for k in kept)
+    allow = {}
+    for i, k in enumerate(kept):
+        cand = pieces.allow.get(k)
+        label = pieces.cls[k]
+        if cand is None:
+            allow[i] = None
+            continue
+        cand = frozenset(cand) & wanted
+        # its own class short of pieces -> keep the alternatives; otherwise insist on the reading
+        allow[i] = (cand or None) if have[label] < need.get(label, 0) else frozenset([label])
     asm.apply_cut_constraint(cr, cd, piece_edges, weight=weight)
-    got = asm.assemble(cell_cls, {i: pieces.cls[k] for i, k in enumerate(kept)}, cr, cd,
-                       n=N)
+    got = asm.assemble(cell_cls, allow, cr, cd, n=N)
     print(f"  seam plan: {len(kept)} pieces, {known} with all four cuts read, "
           f"{len(got)}/{len(cell_cls)} cells filled")
     return {f"{r},{c}": kept[i] for (r, c), i in got.items()}
@@ -227,6 +293,7 @@ def main() -> int:
     print("\npieces in the tray")
     pieces = Pieces()
     pieces.inventory(snap, idf)
+    name_blanks(pieces, snap.img, want=sum(1 for v in cells.values() if v == BLANK))
     print(f"  {len(pieces.tpl)} pieces, classes "
           f"{dict(Counter(pieces.cls.values()).most_common())}")
 
@@ -268,20 +335,22 @@ def main() -> int:
             time.sleep(0.12)
 
     # ---- the assignment -----------------------------------------------------
-    # Two independent ways to decide it, and the pixels win when they are complete: the seam
-    # Two independent ways to decide it, and the pixels win when they are complete: the seam
-    # plan checks the whole arrangement against the actual photograph, while the rule solver
-    # only asks each piece whether its four cuts are legal somewhere.  Measured on synthetic
-    # games with known answers, pixels+cuts filled 6/6 exactly (100% of pieces).
+    # Two independent readings of the same question.  The seam plan compares the whole
+    # arrangement against the photograph itself (measured on synthetic games with known
+    # answers: 6/6 exact, and still 6/6 with 10% of the cut signs wrong); the rule solver only
+    # asks whether each piece's four cuts are legal somewhere.  Both are computed and the more
+    # complete one wins, with the seam plan preferred on a tie because it uses more evidence.
+    cell_cls = {tuple(int(v) for v in k.split(",")): v for k, v in cells.items()}
     plan = seam_plan(mouse, pieces, cell_cls, edges)
-    if len(plan) < N * N:
-        jp = {k: jigsaw.Piece(k, pieces.cls[k],
-                              {s: EDGE_SIGN[edges[k].get(s)] for s in SIDES})
-              for k in pieces.tpl}
-        sol = jigsaw.solve_soft(cell_cls, jp, n=N)
-        print(f"  fell back to the rule solver: {len(sol.assignment)} cells, "
-              f"{jigsaw.violations(cell_cls, jp, sol.assignment, n=N)} rule(s) broken")
-        plan = {f"{r},{c}": k for (r, c), k in sol.assignment.items()}
+    jp = {k: jigsaw.Piece(k, pieces.cls[k],
+                          {s: EDGE_SIGN[edges[k].get(s)] for s in SIDES})
+          for k in pieces.tpl}
+    sol = jigsaw.solve_soft(cell_cls, jp, n=N)
+    rule = {f"{r},{c}": k for (r, c), k in sol.assignment.items()}
+    print(f"  rule solver: {len(rule)} cells, "
+          f"{jigsaw.violations(cell_cls, jp, sol.assignment, n=N)} rule(s) broken")
+    if len(rule) > len(plan):
+        plan = rule
     print(f"\nassignment: {len(plan)} cells")
     LOG.write_text(json.dumps({"cells": cells, "pieces": pieces.cls, "edges": edges,
                                "plan": plan}, indent=2), encoding="utf-8")

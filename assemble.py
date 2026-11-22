@@ -140,6 +140,20 @@ def arrangement_cost(assign: dict[tuple[int, int], int], cr, cd, n: int = N) -> 
     return float(total)
 
 
+def _fits(piece_cls: dict, i: int, want) -> bool:
+    """May piece i sit in a cell that wants `want`?
+
+    A piece's class is often a two-way vote: the catalog and the classifier disagree, and the
+    reading is then "one of these", not "this".  Collapsing that to one label is what left two
+    white pieces unable to reach the five white cells they belonged to.  So a set means "any of
+    these", None means "not sure enough to rule anything out", a plain string stays exact.
+    """
+    v = piece_cls.get(i)
+    if want is None or v is None:
+        return True
+    return want in v if isinstance(v, (set, frozenset)) else want == v
+
+
 def _greedy(order, cell_cls, piece_cls, cr, cd, n, piece_order):
     assign: dict[tuple[int, int], int] = {}
     used: set[int] = set()
@@ -147,7 +161,7 @@ def _greedy(order, cell_cls, piece_cls, cr, cd, n, piece_order):
         want = cell_cls.get(cell)
         best, best_cost = None, None
         for i in piece_order:
-            if i in used or (want is not None and piece_cls[i] != want):
+            if i in used or not _fits(piece_cls, i, want):
                 continue
             cost = 0.0
             for (dr, dc) in ((0, -1), (0, 1), (-1, 0), (1, 0)):
@@ -179,8 +193,8 @@ def _polish(assign, cell_cls, piece_cls, cr, cd, n):
         improved = False
         for a, b in combinations(keys, 2):
             ia, ib = assign[a], assign[b]
-            if (cell_cls.get(a) is not None and piece_cls[ib] != cell_cls[a]) or \
-               (cell_cls.get(b) is not None and piece_cls[ia] != cell_cls[b]):
+            if not _fits(piece_cls, ib, cell_cls.get(a)) or \
+               not _fits(piece_cls, ia, cell_cls.get(b)):
                 continue
             assign[a], assign[b] = ib, ia
             cost = arrangement_cost(assign, cr, cd, n)
@@ -194,7 +208,7 @@ def _polish(assign, cell_cls, piece_cls, cr, cd, n):
             ok = True
             for cell, piece in ((a, ib), (b, ic), (c, ia)):
                 want = cell_cls.get(cell)
-                if want is not None and piece_cls[piece] != want:
+                if not _fits(piece_cls, piece, want):
                     ok = False
                     break
             if not ok:
@@ -217,11 +231,16 @@ def assemble(cell_cls: dict[tuple[int, int], str], piece_cls: dict[int, str],
     One greedy pass plus a swap search solved only 3 of 6 synthetic games (84.7% of pieces).
     The misses were almost all rotations of three pieces, which no swap can repair, so the
     polish now also rotates triples, and several restarts keep the cheapest arrangement.
+
+    Incomplete arrangements are returned rather than discarded.  Demanding all n*n cells meant
+    that one cell nobody could legally fill -- a cell wanting umbrella on a tray holding no
+    umbrella, after the reader had already shortened five white pieces to three -- threw away
+    24 perfectly good placements with it.  More filled cells wins over a cheaper partial one.
     """
     import random as _random
     order = ring_order(n)
     rng = _random.Random(5)
-    best_assign, best_cost = None, None
+    best_assign, best_key = None, None
     base = list(piece_cls)
     for k in range(restarts):
         piece_order = base[:]
@@ -231,11 +250,15 @@ def assemble(cell_cls: dict[tuple[int, int], str], piece_cls: dict[int, str],
         if k:
             rng.shuffle(seed)
         assign = _greedy(seed, cell_cls, piece_cls, cr, cd, n, piece_order)
-        if len(assign) < n * n:
+        if not assign:
             continue
-        assign, cost = _polish(assign, cell_cls, piece_cls, cr, cd, n)
-        if best_cost is None or cost < best_cost:
-            best_assign, best_cost = assign, cost
+        if len(assign) == n * n:
+            assign, cost = _polish(assign, cell_cls, piece_cls, cr, cd, n)
+        else:
+            cost = arrangement_cost(assign, cr, cd, n)
+        key = (len(assign), -cost)
+        if best_key is None or key > best_key:
+            best_assign, best_key = assign, key
     return best_assign or {}
 
 
