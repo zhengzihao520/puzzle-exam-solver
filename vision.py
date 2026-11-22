@@ -1,10 +1,10 @@
-"""Verified vision layer for puzzle.moyunliuyin.me (exam mode).
+﻿"""Verified vision layer for puzzle.moyunliuyin.me (exam mode).
 
 Everything here was measured on real screenshots, not guessed:
 
 * board          (463, 460, 530, 418)  -- N x N cells, N comes from the reference panel
 * reference      (1436, 509, 451, 338) -- N x N same-class *other* photos (no pixel match)
-* progress       (1540, 225, 1790, 285) -- "进度: k/N" text, the only外部 success truth
+* progress       (1540, 225, 1790, 285) -- "杩涘害: k/N" text, the only澶栭儴 success truth
 * tray           two side bands, 3 columns each, row count varies per part
                   (3x5 = 15 slots per band for part 1/2, 3x6 = 18 slots for part 3)
 
@@ -184,22 +184,54 @@ def tray_cols(img: np.ndarray, band: str) -> list[tuple[int, int]]:
 # else, so they survive scrolling and zoom.
 TRAY_STEP = (129.92, 98.6)          # pieceWidth * 1.16, pieceHeight * 1.16 for a 5x5
 TRAY_PIECE = (112.0, 85.0)
-TRAY_LATTICE = {"left": (-1406.0, -82.0), "right": (-433.0, -82.0)}
-TRAY_SHAPE = (5, 3)                 # rows, columns per band
+TRAY_TOP_REL = -82.0                # first slot row, relative to the reference panel
+TRAY_COL_REL = {"left": -1406.0, "right": -433.0}
+TRAY_COLS = 3
 
 
-def lattice_slots(img: np.ndarray, band: str) -> list[tuple[int, int, tuple[int, int, int, int]]]:
+def lattice_slots(img: np.ndarray, band: str,
+                  rows: int | None = None,
+                  top_rel: float | None = None
+                  ) -> list[tuple[int, int, tuple[int, int, int, int]]]:
     """(row, col, (x, y, w, h)) for a whole tray band, whatever is left in it."""
     ref = find_reference(img)
     sx, sy = ref.w / CAL_REF[0], ref.h / CAL_REF[1]
-    dx, dy = TRAY_LATTICE[band]
-    x0, y0 = ref.x + dx * sx, ref.y + dy * sy
-    rows, cols = TRAY_SHAPE
+    x0 = ref.x + TRAY_COL_REL[band] * sx
+    y0 = ref.y + (TRAY_TOP_REL if top_rel is None else top_rel) * sy
+    rows = TRAY_SHAPE[0] if rows is None else rows
     pw, ph = TRAY_PIECE[0] * sx, TRAY_PIECE[1] * sy
     step_x, step_y = TRAY_STEP[0] * sx, TRAY_STEP[1] * sy
     return [(r, c, (round(x0 + c * step_x), round(y0 + r * step_y),
                     round(pw), round(ph)))
-            for r in range(rows) for c in range(cols)]
+            for r in range(rows) for c in range(TRAY_COLS)]
+
+
+def calibrate_tray(img: np.ndarray, expected: int = 30, verbose: bool = False):
+    """Find the tray lattice that can actually hold every piece.
+
+    slotRows = floor(canvasHeight / stepY) depends on the window: this machine shows six
+    rows where an earlier session showed five, and a hard-coded five reported five pieces
+    missing that were sitting in the row it never looked at.  Rather than trust a constant,
+    try the plausible geometries and keep the smallest one that accounts for `expected`
+    pieces.
+    """
+    best = None
+    for top_rel in (TRAY_TOP_REL, TRAY_TOP_REL + TRAY_STEP[1], TRAY_TOP_REL - TRAY_STEP[1]):
+        for rows in (4, 5, 6, 7, 8):
+            slots = [box for band in ("left", "right")
+                     for _r, _c, box in lattice_slots(img, band, rows, top_rel)]
+            slots = [b for b in slots
+                     if b[0] >= 0 and b[1] >= 0
+                     and b[0] + b[2] <= img.shape[1] and b[1] + b[3] <= img.shape[0]]
+            occ = sum(1 for b in slots if not is_empty(sub(img, b)))
+            score = (occ >= expected, occ, -len(slots))
+            if best is None or score > best[0]:
+                best = (score, top_rel, rows, slots, occ)
+    _score, top_rel, rows, slots, occ = best
+    if verbose:
+        print(f"tray lattice: {rows} rows x {TRAY_COLS} cols per band, "
+              f"top offset {top_rel:+.0f} px, {occ} of {len(slots)} slots hold a piece")
+    return slots, rows, top_rel, occ
 
 
 def tray_slots(img: np.ndarray, band: str,
@@ -412,9 +444,9 @@ def board_filled(img: np.ndarray, n: int) -> list[bool]:
 
 
 # ---- progress counter: the only authoritative success signal -----------------
-# "进度: k/N" sits just above the reference panel; k increases exactly once per piece
+# "杩涘害: k/N" sits just above the reference panel; k increases exactly once per piece
 # that is dropped on its own cell, so a change in this crop *is* the verdict.
-PROGRESS_REL = (-235, -292, 470, 44)     # the whole "进度: k/N" text row, relative to the reference panel
+PROGRESS_REL = (-235, -292, 470, 44)     # the whole "杩涘害: k/N" text row, relative to the reference panel
 
 
 def progress_box(img: np.ndarray) -> tuple[int, int, int, int]:
@@ -443,7 +475,7 @@ def progress_changed(a: np.ndarray, b: np.ndarray, ignore: set[int], thresh: int
 
     The counter shares its row with a live timer, so raw frame comparison always reports a
     change.  Columns that move while the page is idle are masked out first, and what is
-    left is the "进度: k/N" text.
+    left is the "杩涘害: k/N" text.
     """
     if a.shape != b.shape:
         return False
@@ -456,3 +488,4 @@ def progress_changed(a: np.ndarray, b: np.ndarray, ignore: set[int], thresh: int
 def read_progress(img: np.ndarray) -> str:
     """Raw crop of the progress label; the caller compares it for changes."""
     return sub(img, PROGRESS).tobytes()
+
