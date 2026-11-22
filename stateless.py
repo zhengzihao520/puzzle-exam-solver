@@ -266,8 +266,8 @@ def seam_plan(mouse: Mouse, pieces: "Pieces", cell_cls: dict, edges: dict,
         for side, v in zip(SIDES, piece_edges[i]):
             if v != 0:
                 continue
-            on_edge = {"top": r == 0, "bottom": r == n - 1,
-                       "left": c == 0, "right": c == n - 1}[side]
+            on_edge = {"top": r == 0, "bottom": r == N - 1,
+                       "left": c == 0, "right": c == N - 1}[side]
             if not on_edge:
                 return True
         return False
@@ -497,17 +497,26 @@ def main() -> int:
     # and with a fresh set each time the next run repeats the refusals instead of moving on to the
     # other copy of that class -- of which the exam always gives one that does not fit (a decoy).
     TRIED = vision.ROOT / "logs" / "tried.json"
-    tried: set[tuple[str, str]] = set()
+    tried: dict[tuple[str, str], int] = {}
     if TRIED.exists():
         try:
-            tried = {(a, b) for a, b in json.loads(TRIED.read_text(encoding="utf-8"))}
+            raw = json.loads(TRIED.read_text(encoding="utf-8"))
         except (ValueError, OSError):
-            tried = set()
-        print(f"  {len(tried)} (piece, cell) pair(s) already refused in earlier runs")
-    print("walking the ring over the cells still open")
+            raw = []
+        for row in raw:
+            # older runs wrote a bare [piece, cell] pair; newer ones add the refusal count
+            piece, cell = row[0], row[1]
+            tried[(piece, cell)] = row[2] if len(row) > 2 else 1
+        print(f"  {len(tried)} (piece, cell) pair(s) refused in earlier runs")
+    # One refusal does not condemn a pair.  The lock test itself is not perfect -- an audit of a
+    # finished board counted 1 or 2 fewer cells than the loop had confirmed -- and when it calls a
+    # good placement refused, the piece is dragged straight back off the cell.  Banning the pair
+    # forever turned that misreading into a cell that could never be filled again.
+    TRIES_ALLOWED = 2
 
+    print("walking the ring over the cells still open")
     for attempt in range(args.passes):
-        progress = 0
+        progress = tries = 0
         for r, c in ring_order(N):
             if moves >= args.max_moves:
                 break
@@ -526,20 +535,49 @@ def main() -> int:
             # plan's first choice can be the one that does not fit this cell, and with a single
             # candidate the run would keep re-proposing it instead of trying the other copy.
             order = ([plan[key]] if key in plan and plan[key] not in pieces.used else [])
-            order = [k for k in order if (k, key) not in tried]
+            order = [k for k in order if tried.get((k, key), 0) < TRIES_ALLOWED]
             if not order:
-                order = [k for k in pieces.spare(wanted) if (k, key) not in tried][:2]
+                order = [k for k in pieces.spare(wanted)
+                         if tried.get((k, key), 0) < TRIES_ALLOWED][:2]
             if not order:
-                print(f"    cell({key}) {wanted}: no piece of that class left -- cell left empty")
+                # Last resort for a cell whose own piece the reader labelled as something else:
+                # offer *any* untried piece whose shape does not rule the cell out.  Bounded on
+                # purpose -- two per cell per pass -- and the refused pairs live on disk, so the
+                # next run carries on from where this one stopped instead of repeating them.
+                def shape_allows(pk: str) -> bool:
+                    for side in SIDES:
+                        if EDGE_SIGN[edges[pk].get(side)] != 0:
+                            continue
+                        on_edge = {"top": r == 0, "bottom": r == N - 1,
+                                   "left": c == 0, "right": c == N - 1}[side]
+                        if not on_edge:
+                            return False
+                    return True
+
+                pool = [k for k in pieces.spare()
+                        if tried.get((k, key), 0) < TRIES_ALLOWED]
+                strict = [k for k in pool if shape_allows(k)]
+                # shape first, but never to the point of having nothing to offer: the reader
+                # misses flat sides far more often than it invents them (25 pieces produced 0
+                # flat lefts), so demanding a flat bottom on a bottom-row cell excluded every
+                # candidate and the cell was then declared untryable.
+                order = (strict or pool)[:2]
+            if not order:
+                print(f"    cell({key}) {wanted}: nothing left to try -- cell left empty")
                 continue
             done = False
             for pk in order:
+                tries += 1
                 if moves >= args.max_moves:
                     break
                 box, sc = locate(snap, pieces.tpl[pk])
                 if box is None:
-                    pieces.used.add(pk)
-                    print(f"    {pk}: not visible anywhere (best {sc:.2f}) -- dropped from play")
+                    # Do NOT retire the piece.  Not finding it is a failure of the search, or of
+                    # where it was last set down -- not proof that it left the game.  Retiring it
+                    # is what makes a piece vanish for good: three of thirty were dropped this way
+                    # on a live board, and their cells could never be filled again, which is
+                    # exactly the "one piece never goes in" symptom.
+                    print(f"    {pk}: not found this time (best {sc:.2f}) -- will look again later")
                     continue
                 sx, sy = centre(box)
                 mouse.grab_at((sx, sy))
@@ -568,8 +606,9 @@ def main() -> int:
                     done = True
                     break
                 refused[(pieces.cls[pk], wanted)] += 1
-                tried.add((pk, key))
-                TRIED.write_text(json.dumps(sorted(tried)), encoding="utf-8")
+                tried[(pk, key)] = tried.get((pk, key), 0) + 1
+                TRIED.write_text(json.dumps([[a, b, v] for (a, b), v in sorted(tried.items())]),
+                                 encoding="utf-8")
                 print(f"    {pk} ({pieces.cls[pk]}) -> cell({key}) wanted {wanted}  "
                       f"[move {moves}]  refused (fingerprint {here:.2f})")
                 # The user's rule, and the reason it matters beyond tidiness: take the piece back
@@ -590,8 +629,9 @@ def main() -> int:
                     print(f"      -> taken back to its own slot at ({sx},{sy})  [move {moves}]")
                 break            # one piece per cell per pass: no candidate roulette
         if progress == 0:
-            print("  no progress in this pass")
-            break
+            print(f"  no progress in this pass, {tries} attempt(s) made")
+            if tries == 0:
+                break          # nothing left to offer anywhere; another pass would be identical
 
     final = Snap(mouse.shot())
     cv2.imwrite(str(SHOTS / "stateless_end.png"), final.img)
