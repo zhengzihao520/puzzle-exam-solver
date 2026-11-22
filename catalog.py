@@ -33,7 +33,8 @@ class Match:
 
 
 class Catalog:
-    def __init__(self, size: tuple[int, int] = (112, 85), central: tuple[int, int] = (72, 56),
+    def __init__(self, size: tuple[int, int] = (112, 85),
+                 central: tuple[int, int] | None = (72, 56),
                  cache: Path = CACHE) -> None:
         self.size = size
         self.central = central
@@ -69,10 +70,11 @@ class Catalog:
         whole-cell NCC 0.45 vs 0.84 for reference thumbnails that are not clipped).
         """
         g = cv2.cvtColor(cv2.resize(img, self.size), cv2.COLOR_BGR2GRAY).astype(np.float32)
-        cw, ch = self.central
-        x0 = (self.size[0] - cw) // 2
-        y0 = (self.size[1] - ch) // 2
-        g = g[y0:y0 + ch, x0:x0 + cw]
+        if self.central is not None:
+            cw, ch = self.central
+            x0 = (self.size[0] - cw) // 2
+            y0 = (self.size[1] - ch) // 2
+            g = g[y0:y0 + ch, x0:x0 + cw]
         g -= g.mean()
         n = float(np.linalg.norm(g))
         return (g / n if n else g).ravel()
@@ -116,6 +118,75 @@ class Catalog:
                 if m.score > best.score:
                     best = m
                     best.path = f"{m.path}|offset({dx},{dy})"
+        return best
+
+    def match_masked(self, img: np.ndarray, box: tuple[int, int, int, int],
+                     radius: int = 8, step: int = 4) -> Match:
+        """Catalog match using only the piece's own photo pixels.
+
+        A slot box contains the piece plus background where a notch is carved and, at the
+        corners, whatever is behind the jigsaw outline.  Feeding those pixels in drags the
+        correlation down (0.3-0.7 measured).  Here the piece mask is taken from brightness
+        (tray background is 9, every photo is brighter), holes are filled so a dark photo is
+        not punched through, and the correlation is computed over that mask only.
+        """
+        w, h = self.size
+        if self.central is not None:
+            # masked correlation needs the whole cell in the feature vector
+            self.central = None
+            self.__init__(size=self.size, central=None, cache=CACHE.with_name("catalog_full.npz"))
+        feats = self.feats
+        best = Match("?", "", -1.0, "?", -1.0)
+        for dy in range(-radius, radius + 1, step):
+            for dx in range(-radius, radius + 1, step):
+                X, Y = box[0] + dx, box[1] + dy
+                if X < 2 or Y < 2 or X + w > img.shape[1] - 2 or Y + h > img.shape[0] - 2:
+                    continue
+                crop = cv2.resize(img[Y:Y + h, X:X + w], self.size)
+                g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
+                m = (g > 20).astype(np.uint8)
+                m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+                n_lab, lab, st, _ = cv2.connectedComponentsWithStats(m)
+                if n_lab < 2:
+                    continue
+                cy, cx = h // 2, w // 2
+                seed = lab[cy, cx]
+                if seed == 0:                      # centre fell on a notch: take the biggest
+                    seed = 1 + int(np.argmax(st[1:, 4]))
+                m = (lab == seed).astype(np.uint8)
+                ff = m.copy()
+                cv2.floodFill(ff, np.zeros((h + 2, w + 2), np.uint8), (0, 0), 1)
+                holes = (ff == 0).astype(np.uint8)
+                m = np.clip(m + holes, 0, 1)
+                if m.sum() < 3000:
+                    continue
+                mask = m.ravel().astype(np.float32)
+                k = float(mask.sum())
+                q = g.ravel()
+                qm = float((q * mask).sum() / k)
+                qz = q - qm
+                qn = float(np.sqrt(((qz ** 2) * mask).sum()))
+                if qn <= 1e-6:
+                    continue
+                csum = feats @ mask
+                csq = (feats ** 2) @ mask
+                cmean = csum / k
+                cvar = csq - k * cmean ** 2
+                cvar = np.clip(cvar, 1e-6, None)
+                num = feats @ (qz * mask)
+                scores = num / (qn * np.sqrt(cvar))
+                i = int(np.argmax(scores))
+                if float(scores[i]) > best.score:
+                    best = Match(self.labels[i], f"{self.paths[i]}|offset({dx},{dy})",
+                                 float(scores[i]), "?", 0.0)
+        if best.score > 0:
+            q = self._feature(img[box[1]:box[1] + h, box[0]:box[0] + w])
+            allsc = self.feats @ q
+            for j in np.argsort(allsc)[::-1]:
+                if self.labels[int(j)] != best.class_name:
+                    best.runner_up_class = self.labels[int(j)]
+                    best.runner_up_score = float(allsc[int(j)])
+                    break
         return best
 
 
