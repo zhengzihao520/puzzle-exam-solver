@@ -109,7 +109,22 @@ def main() -> int:
         return 2
 
     clf = vision.Classifier()
-    img = vision.grab()
+    # a single grab can land on a transient frame (window animation, repaint); keep the
+    # frame that actually shows pieces
+    best_img, best_count = None, -1
+    for _try in range(6):
+        frame = vision.grab()
+        rows_try = vision.tray_rows(frame)
+        count = sum(1 for band in ("left", "right")
+                    for _ri, _ci, box in vision.tray_slots(frame, band, rows_try)
+                    if not vision.is_empty(vision.sub(frame, box)))
+        print(f"grab {_try + 1}: {count} pieces, {len(rows_try)} tray rows", flush=True)
+        if count > best_count:
+            best_img, best_count = frame, count
+        if count >= 6:
+            break
+        time.sleep(0.6)
+    img = best_img
     cv2.imwrite(str(vision.ROOT / "shots" / "solve3_start.png"), img)
     ref, board, _ = vision.layout(img)
     pbox = vision.progress_box(img)
@@ -150,9 +165,9 @@ def main() -> int:
         cell = vision.sub(img, box)
         if vision.is_empty(cell) or not vision.is_real_piece(img, box):
             continue
-            p = clf.probs(cell)
-            label = "blank" if vision.is_white_piece(cell) else str(clf.names[int(p.argmax())])
-            pieces.append({"key": key, "box": box, "label": label, "probs": p})
+        p = clf.probs(cell)
+        label = "blank" if vision.is_white_piece(cell) else str(clf.names[int(p.argmax())])
+        pieces.append({"key": key, "box": box, "label": label, "probs": p})
     filled = vision.board_filled(img, N)
     rows_now = len(rows)
     print(f"board {sum(filled)}/{N * N}, pieces {len(pieces)}, tray rows {rows_now}")
