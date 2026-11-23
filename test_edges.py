@@ -24,8 +24,16 @@ PW, PH = 112.0, 85.0
 PAD = 40
 
 
-def render(edges, rng: random.Random) -> tuple[np.ndarray, tuple[int, int, int, int]]:
-    """A piece with `edges`, on the board's background, plus its box."""
+def render(edges, rng: random.Random, shadow: bool = True
+           ) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+    """A piece with `edges`, on the board's background, plus its box.
+
+    The engine does two things a naive sprite would not: it strokes the outline in 40% white, and
+    it drops a soft shadow about 20 px below and to the right.  The stroke has always been here;
+    the shadow is added because the flat-side reading fails on the real screen (0 to 4 flats out
+    of 25) while it is exact on synthetic input, and the shadow is the obvious difference -- it
+    darkens the very gap that a flat side is supposed to leave empty.
+    """
     mask = pc.piece_mask(tuple(edges), PW, PH)
     ch, cw = mask.shape
     canvas = np.zeros((ch + 2 * PAD, cw + 2 * PAD, 3), np.uint8)
@@ -39,6 +47,11 @@ def render(edges, rng: random.Random) -> tuple[np.ndarray, tuple[int, int, int, 
     texture = cv2.GaussianBlur(texture, (0, 0), 1.2)
     m = np.zeros(canvas.shape[:2], np.uint8)
     m[PAD:PAD + ch, PAD:PAD + cw] = mask
+    if shadow:
+        off = np.float32([[1, 0, 7], [0, 1, 12]])
+        sh = cv2.warpAffine((m * 255), off, (canvas.shape[1], canvas.shape[0]))
+        sh = cv2.GaussianBlur(sh, (0, 0), 5.0).astype(np.float32) / 255.0
+        canvas = (canvas.astype(np.float32) * (1.0 - 0.5 * sh[..., None])).astype(np.uint8)
     canvas[m == 1] = texture[m == 1]
     # the engine strokes the piece outline in 40% white
     cont, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
@@ -51,6 +64,9 @@ def render(edges, rng: random.Random) -> tuple[np.ndarray, tuple[int, int, int, 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--trials", type=int, default=300)
+    ap.add_argument("--no-shadow", action="store_true",
+                    help="render without the engine's drop shadow, to compare against the "
+                         "shadowed case and see whether the shadow is what breaks flat sides")
     args = ap.parse_args()
     rng = random.Random(2026)
 
@@ -66,7 +82,7 @@ def main() -> int:
         flat_at = set(rng.sample(range(4), n_flat))
         edges = tuple(pc.FLAT if i in flat_at else rng.choice((pc.TAB, pc.NOTCH))
                       for i in range(4))
-        img, box = render(edges, rng)
+        img, box = render(edges, rng, shadow=not args.no_shadow)
         names = ("top", "right", "bottom", "left")
         # piececutter's signs describe the *path offset*: +1 bends inward (a dent, which the
         # reader calls 'notch'), -1 bends outward (a bulge, 'tab').  The reader reports the
