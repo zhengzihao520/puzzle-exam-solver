@@ -339,19 +339,38 @@ def press_is_locked(mouse: Mouse, box, presses: int = 5) -> bool:
     and reading that as "locked" is exactly how an earlier version reported 17 placed cells
     when the game said 10.  A locked box costs no move (the engine returns before counting),
     so the extra presses are free.
+
+    Two things this now does that it did not, both of which made a refused drop look locked:
+
+    * it looks at texture as well as brightness.  A piece leaving a cell takes its texture with
+      it, while the brightness test alone missed dark pieces on the dark board -- a cell at 36
+      going to 23 is a drop of 13, under the old fixed threshold of 25, so the piece was reported
+      as "still there" and the cell was credited as placed when it was not.  That is the loop
+      counting one or two more cells than the final audit;
+    * it always releases the button and puts the piece back where it found it.  It used to return
+      with the button still down when it detected a lift, so the next grab dragged whatever the
+      pointer happened to be over.  A test that moves things must undo its own move.
     """
+    def signature() -> tuple[float, float]:
+        g = cv2.cvtColor(vision.sub(mouse.shot(), box), cv2.COLOR_BGR2GRAY)
+        return float(g.mean()), float(g.std())
+
     cx, cy = centre(box)
     offsets = ((0, 0), (-30, -20), (30, 20), (-30, 20), (30, -20))[:presses]
     for dx, dy in offsets:
         pt = (cx + dx, cy + dy)
-        before = float(cv2.cvtColor(vision.sub(mouse.shot(), box), cv2.COLOR_BGR2GRAY).mean())
+        before_mean, before_std = signature()
         mouse.grab_at(pt)
-        mouse.glide((pt[0] + 62, pt[1] + 38))
-        time.sleep(0.14)
-        after = float(cv2.cvtColor(vision.sub(mouse.shot(), box), cv2.COLOR_BGR2GRAY).mean())
-        if after < before - 25 or after < 30:
+        try:
+            mouse.glide((pt[0] + 62, pt[1] + 38))
+            time.sleep(0.14)
+            after_mean, after_std = signature()
+        finally:
+            mouse.glide(pt)               # put back whatever this press may have picked up
+            mouse.release()
+        if after_mean < before_mean - max(8.0, 0.25 * before_mean) or \
+                after_std < 0.60 * before_std:
             return False                  # it came with the pointer
-        mouse.release()
     return True
 
 
@@ -598,8 +617,11 @@ def main() -> int:
                 # piece), not by the fingerprint: the fingerprint told the truth only 2 times
                 # out of 8 the engine had in fact locked, which then cost a second attempt on
                 # an already-finished cell.
+                # Let the snap finish before asking whether the piece can be lifted: probing while
+                # the engine is still animating the drop gets a "cannot lift" answer for a drop
+                # that has not actually taken, which is how a cell got credited without a piece.
+                time.sleep(0.28)
                 if press_is_locked(mouse, after.cells[key]):
-                    confirmed[key] = pk
                     pieces.used.add(pk)
                     progress += 1
                     print(f"    {pk} ({pieces.cls[pk]}) -> cell({key})  [move {moves}]  "
