@@ -621,7 +621,23 @@ def main() -> int:
                 # the engine is still animating the drop gets a "cannot lift" answer for a drop
                 # that has not actually taken, which is how a cell got credited without a piece.
                 time.sleep(0.28)
-                if press_is_locked(mouse, after.cells[key]):
+                # Press the piece where it actually is, not where the cell is.  A dropped piece
+                # that did not snap lies near the cell but not on it, and five presses around the
+                # cell's centre then all land on empty board: nothing moves, which reads as
+                # "cannot lift" and credits a cell that has no piece in it.  That is the one cell
+                # by which the loop kept overrunning its own audit.
+                probe = after.cells[key]
+                where, _w = locate(after, pieces.tpl[pk])
+                if where is not None:
+                    probe = where
+                locked = press_is_locked(mouse, probe)
+                if not locked:
+                    # The same probe gives different answers a second apart: the snap animation is
+                    # still settling.  Ask again once it has calmed down and take the later answer.
+                    time.sleep(0.45)
+                    locked = press_is_locked(mouse, probe)
+                if locked:
+                    confirmed[key] = pk
                     pieces.used.add(pk)
                     progress += 1
                     print(f"    {pk} ({pieces.cls[pk]}) -> cell({key})  [move {moves}]  "
