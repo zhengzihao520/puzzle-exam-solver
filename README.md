@@ -9,6 +9,18 @@
 
 > **只看运行命令 → 第 8 节。**
 
+## 0. 交付清单
+
+| 要交的东西 | 在仓库里的位置 |
+|---|---|
+| 主程序（单入口） | `stateless.py`；按职责拆开的模块：`vision.py`（识别）、`panel_match.py`（对参考图匹配）、`probe_edges.py`（切边）、`assemble.py`（装配）、`fingerprint.py`（块指纹）、`solve_live.py`（鼠标/前台） |
+| **二次训练完的 YOLO 模型** | `runs/cls/weights/best.pt`（YOLO11s-cls，15 类，val top1 0.96） |
+| 训练数据 | `raw_assets/`（站点同源图库 750 张）、`dataset/crops/`（真实块裁片）、`real_pieces/`（30 块人工标注） |
+| 训练脚本 | `tools/fetch_catalog.py` → `tools/build_dataset.py` → `tools/train_yolo.py` |
+| 怎么跑 | 第 8 节（双击 `run.bat` / `dry.bat`） |
+| 实现说明与实测数字 | 第 1–7 节、第 9 节；边界情况见 `docs/limits.md` |
+| 环境 | `requirements.txt` |
+
 ---
 
 ## 1. 站点规则（读源码确认，不是推测）
