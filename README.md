@@ -238,6 +238,22 @@ D:\python\python.exe stateless.py --go --size 5   # 强制格数（自动识别�
 `--dry` 会打印：识别的格数、找到的块、参考面板匹配覆盖了几格、每格分到哪块。
 **看清这几个数再加 `--go`。**
 
+**常见报错**：
+
+```
+foreground: 199x34 on 1920x1080 [某窗口标题] -- abort: exam page is not the foreground window
+```
+
+方括号里就是它当时看到的那个窗口——前台不是浏览器。从终端按回车启动时，前台往往还是终端自己。
+加 `--wait` 留出切换时间，看到提示后再点一下浏览器：
+
+```powershell
+D:\python\python.exe stateless.py --go --wait 5
+```
+
+另有两条硬条件：窗口标题里要有 `Edge` 或 `Chrome`；窗口要**最大化**（宽 ≥ 97%、高 ≥ 93% 屏幕）。
+任何一条不满足都会以退出码 2 结束，**一个鼠标动作都不会做**。
+
 **离线自检（不动鼠标、不用开页面）**：
 
 ```powershell

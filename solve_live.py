@@ -48,8 +48,9 @@ def _enable_dpi() -> None:
             pass
 
 
-def check_foreground(marker: str = "Edge", tries: int = 6) -> tuple[bool, str]:
+def check_foreground(marker: str | tuple[str, ...] = ("Edge", "Chrome"), tries: int = 6) -> tuple[bool, str]:
     """Look only, never switch windows -- and tolerate a window caught mid-transition."""
+    markers = (marker,) if isinstance(marker, str) else tuple(marker)
     import ctypes
     from ctypes import wintypes
     u = ctypes.windll.user32
@@ -66,8 +67,8 @@ def check_foreground(marker: str = "Edge", tries: int = 6) -> tuple[bool, str]:
         if w == 0 or h == 0 or sw == 0:
             time.sleep(0.4)
             continue
-        if marker not in title.value:
-            return False, f"{why} -- abort: exam page is not the foreground window"
+        if not any(m in title.value for m in markers):
+            return False, (f"{why} [{title.value[:40]}] -- abort: exam page is not the foreground window")
         if w < sw * 0.97 or h < sh * 0.93:
             return False, f"{why} -- abort: window is not maximised"
         return True, why

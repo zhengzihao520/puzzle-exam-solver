@@ -432,7 +432,14 @@ def main() -> int:
                          "and cells not already tried together, so it cannot spin forever")
     ap.add_argument("--size", type=int, default=0,
                     help="cells per side; 0 means read it from how many pieces were dealt")
+    ap.add_argument("--wait", type=float, default=0.0,
+                    help="seconds to wait before the foreground check, so you can click the "
+                         "browser after pressing Enter in a terminal")
     args = ap.parse_args()
+    if args.wait > 0:
+        print(f"waiting {args.wait:g}s -- switch to the exam window now "
+              f"(it must be maximised and in the foreground)")
+        time.sleep(args.wait)
     ok, why = check_foreground()
     print(f"foreground: {why}")
     if not ok:
