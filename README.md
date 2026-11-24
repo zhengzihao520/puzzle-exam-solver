@@ -7,6 +7,8 @@
 
 本文件记录的是**实测结论**，包括失败的实验——因为失败的原因决定了下一步该做什么。
 
+> **只看运行命令 → 第 8 节。**
+
 ---
 
 ## 1. 站点规则（读源码确认，不是推测）
@@ -220,28 +222,37 @@ python probe_locked.py 0,4             # 单独查某格是否已吸附
 
 ---
 
-## 8. 复现步骤
+## 8. 怎么运行
+
+**前置条件**：浏览器窗口**最大化**且在前台，页面停在考核里、棋盘可见。
+程序会先自检窗口与前景，不满足就直接退出，不会乱点。
 
 ```powershell
-# 1) 拉取站点同源图库（15 类约 388 张）
-python tools\fetch_catalog.py
-
-# 2) 构建分类数据集
-python tools\build_dataset.py
-
-# 3) 训练分类器（CPU 极慢，建议 GPU）
-python tools\train_yolo.py
-
-# 4) 真实块标注（每轮 3 块，报告类别后自动切下一批）
-python batch.py show left 1
-python batch.py save left 1 "car,desktop,blank"
-python batch.py rebuild
-
-# 5) 真机执行
-python solve3.py --delay 20
+cd F:\exam_next
+D:\python\python.exe stateless.py --dry           # 只识别 + 规划，一个鼠标动作都不做
+D:\python\python.exe stateless.py --go            # 执行（推荐：对着参考面板匹配，25 步）
+D:\python\python.exe stateless.py --go --edges    # 额外读切边（每块多 1 步，诊断用）
+D:\python\python.exe stateless.py --go --size 5   # 强制格数（自动识别失败时用）
 ```
 
-环境：Windows 10、Python 3.14、torch 2.15.0+cpu、ultralytics 8.4.213、opencv 5.0.0、pyautogui（需 `enable_dpi_awareness()`，否则窗口尺寸会被读成 1536×864）。
+`--dry` 会打印：识别的格数、找到的块、参考面板匹配覆盖了几格、每格分到哪块。
+**看清这几个数再加 `--go`。**
+
+**离线自检（不动鼠标、不用开页面）**：
+
+```powershell
+D:\python\python.exe assemble.py --selftest 6            # 装配器：已知答案的合成局
+D:\python\python.exe assemble.py --selftest 6 --err 0.1  # 切边读数错 10% 时
+D:\python\python.exe test_edges.py --trials 300          # 切边读数（含引擎投影）
+```
+
+**模型**：`runs/cls/weights/best.pt`（YOLO11s-cls，15 类，11 MB）已随仓库提供，不用重训。
+确需重训：`tools\fetch_catalog.py` → `tools\build_dataset.py` → `tools\train_yolo.py`。
+
+环境：Windows 10、Python 3.14、torch 2.15.0+cpu、ultralytics 8.4.213、opencv 5.0.0、pyautogui
+（必须先 `_enable_dpi_awareness()`，否则窗口尺寸会被读成 1536×864）。
+
+**注意**：本版本只有 **5×5** 可用（见第 9 节）。3×3 / 4×4 会失败，且会误报块数。
 
 ---
 
