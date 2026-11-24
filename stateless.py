@@ -655,7 +655,7 @@ def main() -> int:
     # finished board counted 1 or 2 fewer cells than the loop had confirmed -- and when it calls a
     # good placement refused, the piece is dragged straight back off the cell.  Banning the pair
     # forever turned that misreading into a cell that could never be filled again.
-    TRIES_ALLOWED = 2
+    TRIES_ALLOWED = 3
 
     print("walking the ring over the cells still open")
     for attempt in range(args.passes):
@@ -731,7 +731,12 @@ def main() -> int:
                 # declared untryable.  Ordering by fit keeps that from happening while still
                 # trying the most plausible piece first.  The budget grows per pass for the same
                 # reason as above: a cell whose piece was misread only gets filled by trying.
-                order = sorted(pool, key=shape_fit, reverse=True)[:min(4, 2 + attempt)]
+                # With only a few cells left the whole remaining tray is fair game: a pair refused
+                # twice is no proof of anything (one refusal is often the lock probe misreading),
+                # and a run that gave up here finished a Part 3 board on 24 of 25 cells with the
+                # piece that fits still sitting in the tray.
+                room = 4 if len(open_cells) - len(confirmed) <= 3 else min(4, 2 + attempt)
+                order = sorted(pool, key=shape_fit, reverse=True)[:max(1, min(len(pool), room))]
             if not order:
                 print(f"    cell({key}) {wanted}: nothing left to try -- cell left empty")
                 continue
