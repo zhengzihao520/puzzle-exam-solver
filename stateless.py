@@ -31,6 +31,7 @@ import numpy as np
 
 import fingerprint as fp
 import jigsaw
+import panel_match as pm
 import probe_edges as pe
 import vision
 from identify import BLANK, Identifier
@@ -564,7 +565,16 @@ def main() -> int:
     repaired = repair_classes(pieces, cell_cls)
     if repaired:
         print(f"  {repaired} piece(s) relabelled to cover every class still wanted")
-    plan = seam_plan(mouse, pieces, cell_cls, edges)
+    # Picture matching against the panel comes first: it identifies each piece's own cell, which is
+    # what a person means by "look at the reference picture", and it costs no moves.  The read cuts
+    # and the class readers are then only needed for whatever it could not place.
+    p_plan, p_conf = pm.plan_from_panel(snap.img, pieces,
+                                        {k: snap.panel[k] for k in open_cells})
+    if p_conf:
+        confs = sorted(p_conf.values(), reverse=True)
+        print(f"  panel plan: {len(p_plan)}/{len(open_cells)} cell(s) matched by picture, "
+              f"best {confs[0]:.2f} / median {confs[len(confs) // 2]:.2f}")
+    plan = p_plan if p_plan else seam_plan(mouse, pieces, cell_cls, edges)
     jp = {k: jigsaw.Piece(k, pieces.cls[k],
                           {s: EDGE_SIGN[edges[k].get(s)] for s in SIDES})
           for k in pieces.tpl}
