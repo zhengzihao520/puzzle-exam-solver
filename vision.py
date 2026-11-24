@@ -222,50 +222,34 @@ def detect_piece_size(img: np.ndarray) -> tuple[int, int] | None:
     return int(np.median([w for w, _ in sizes])), int(np.median([h for _, h in sizes]))
 
 
+def count_tray_pieces(img: np.ndarray) -> int:
+    """How many pieces the tray holds right now.  This is the measurement that works."""
+    return sum(1 for b in tray_slots_all(img) if not is_empty(sub(img, b)))
+
+
 def detect_grid_size(img: np.ndarray) -> tuple[int, int]:
-    """(cells per side, piece width) from the spacing between neighbouring tray pieces.
+    """(cells per side, pieces dealt) from how many pieces the game dealt.
 
-    Measuring one blob's width overstates the piece: the mask includes its protruding tabs, and
-    112 px of body becomes 144-150 px with tabs on.  Dividing the board by that gave 4 where the
-    truth was 5 -- a silently wrong answer, which is worse than none.
+    The exam deals cells x 1.2 pieces, so the total identifies the difficulty: 9+2 = 11,
+    16+3 = 19, 25+5 = 30.  Those are far apart, and this program counts tray pieces accurately --
+    thirty of thirty, repeatedly.
 
-    The spacing between neighbours does not have that problem: the engine places pieces on a
-    lattice of pitch 1.16 x piece, tab or no tab.  So measure the pitch, divide by 1.16, and the
-    grid follows from the board's width.
+    Two earlier attempts measured the piece instead and both produced confident nonsense on a
+    board that was plainly 5x5: blob width is inflated by the tabs (112 px of body reads as 144)
+    and gave 4, and blob pitch merged across gaps and gave 3.  A wrong grid size does not look
+    wrong downstream -- it silently mis-lays every piece -- so the rule now is count, and say
+    nothing if the count does not match a difficulty.
+
+    Valid at the start of a game, when the tray holds every piece.
     """
-    ref, board, bands = layout(img)
-    piece = detect_piece_size(img)
-    if piece is None:
-        return 5, 0
-    grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    raw = (grey > 40).astype(np.uint8) * 255
-    mask = np.zeros_like(raw)
-    for x0, x1, y0, y1 in bands.values():
-        mask[y0:y1, x0:x1] = raw[y0:y1, x0:x1]
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-    n, _lab, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
-    pts = [(cents[i][0], cents[i][1]) for i in range(1, n)
-           if stats[i, cv2.CC_STAT_AREA] > 3000]
-    if len(pts) < 4:
-        return 5, piece[0]
-    gaps = []
-    for x, y in pts:
-        row = sorted(px for px, py in pts if abs(py - y) < piece[1] * 0.5)
-        for a, b in zip(row, row[1:]):
-            if 20 < b - a < 400:
-                gaps.append(b - a)
-    if len(gaps) < 3:
-        return 5, 0
-    body = float(np.median(gaps)) / 1.16
-    ratio = board.w / body
-    # Fail closed.  Two attempts at this produced confident nonsense -- 144 px per piece (tabs
-    # inflate the blob) gave 4, and 219 px (blobs merged across a gap) gave 3, both on a board that
-    # was plainly 5x5 with thirty tray pieces.  A wrong grid size does not look wrong downstream:
-    # it silently mis-lays every piece.  So unless the measurement lands within 8% of a whole
-    # number, and that number is corroborated by the aspect, say so instead of answering.
-    if abs(ratio - round(ratio)) > 0.08 * round(ratio) or not 2 <= round(ratio) <= 6:
-        return 5, 0
-    return int(round(ratio)), int(round(body))
+    tray = count_tray_pieces(img)
+    best, best_err = 5, 99
+    for n in (3, 4, 5, 6):
+        want = n * n + round(n * n * 0.2)
+        err = abs(tray - want)
+        if err < best_err:
+            best, best_err = n, err
+    return (best, tray) if best_err <= 2 else (5, 0)
 
 def tray_slots_all(img: np.ndarray) -> list[tuple[int, int, int, int]]:
     """Every slot the tray can have, rather than the one geometry that was chosen.
