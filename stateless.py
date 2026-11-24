@@ -156,6 +156,47 @@ def whiteness(crop: np.ndarray) -> float:
     return float(((g > 225) & (sat < 25)).mean())
 
 
+def repair_classes(pieces: "Pieces", cell_cls: dict, verbose: bool = True) -> int:
+    """Make the tray's class counts cover the board, using the budget the board itself states.
+
+    The twenty-five cells name exactly which classes are needed and in what quantity, and the tray
+    holds those pieces plus five decoys.  So a class the board needs and the tray does not have
+    means the reader is wrong about some piece -- and the pieces' second choices say which one.
+
+    Without this, a cell whose class is missing falls through to the executor's last-resort sweep,
+    which offers arbitrary pieces; the refusal log from a live board reads exactly like that: car
+    into a chair cell, cat into an airplane cell, six attempts each costing two moves.
+    """
+    need = Counter(cell_cls.values())
+    have = Counter(pieces.cls[k] for k in pieces.tpl)
+    fixed = 0
+    for cls, want in need.most_common():
+        while have[cls] < want:
+            cands = [k for k in pieces.tpl
+                     if k not in pieces.used
+                     and pieces.allow.get(k) is not None
+                     and cls in pieces.allow[k]
+                     and pieces.cls[k] != cls]
+            if not cands:
+                if verbose:
+                    print(f"  class {cls}: {want - have[cls]} piece(s) short and nothing in the "
+                          f"tray even lists it -- some piece is read wrong, not just unsure")
+                break
+            # Prefer a piece whose own class is in surplus, so the repair cannot open a new hole.
+            cands.sort(key=lambda k: (-(have[pieces.cls[k]] - need.get(pieces.cls[k], 0)),
+                                      pieces.cls[k]))
+            k = cands[0]
+            if verbose:
+                print(f"  class {cls}: {k} relabelled {pieces.cls[k]} -> {cls} "
+                      f"(the only way to cover {want} cell(s))")
+            have[pieces.cls[k]] -= 1
+            pieces.cls[k] = cls
+            pieces.allow[k] = frozenset([cls])
+            have[cls] += 1
+            fixed += 1
+    return fixed
+
+
 def name_blanks(pieces: "Pieces", img: np.ndarray, want: int,
                 min_frac: float = 0.9) -> int:
     """Mark the white pieces by rank, since the panel says how many there should be.
@@ -418,6 +459,8 @@ def main() -> int:
     name_blanks(pieces, snap.img, want=sum(1 for v in cells.values() if v == BLANK))
     print(f"  {len(pieces.tpl)} pieces, classes "
           f"{dict(Counter(pieces.cls.values()).most_common())}")
+    print(f"  {len(pieces.tpl)} pieces, classes "
+          f"{dict(Counter(pieces.cls.values()).most_common())}")
 
     need = Counter(v for v in cells.values())
     have = Counter(pieces.cls.values())
@@ -487,6 +530,12 @@ def main() -> int:
     open_cells = {k: v for k, v in cells.items() if k not in confirmed}
     print(f"\n{len(confirmed)} cell(s) already locked, {len(open_cells)} still to do")
     cell_cls = {tuple(int(v) for v in k.split(",")): v for k, v in open_cells.items()}
+    # Repair against the cells that still need a piece, not all twenty-five: most pieces are
+    # already on the board, so comparing the tray against the whole board reports a shortage of
+    # nearly every class and relabels pieces that were right.
+    repaired = repair_classes(pieces, cell_cls)
+    if repaired:
+        print(f"  {repaired} piece(s) relabelled to cover every class still wanted")
     plan = seam_plan(mouse, pieces, cell_cls, edges)
     jp = {k: jigsaw.Piece(k, pieces.cls[k],
                           {s: EDGE_SIGN[edges[k].get(s)] for s in SIDES})
