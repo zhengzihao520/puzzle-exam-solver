@@ -189,6 +189,48 @@ TRAY_COL_REL = {"left": -1406.0, "right": -433.0}
 TRAY_COLS = 3
 
 
+def detect_piece_size(img: np.ndarray) -> tuple[int, int] | None:
+    """Measure one piece, so the grid size can be derived instead of assumed.
+
+    Every difficulty uses the same board canvas and divides it into more or fewer cells, so the
+    piece size is what identifies the difficulty: a 5x5 piece is about 112x85 here, a 4x4 about
+    140x106, a 3x3 about 187x142.  The tray holds many separated pieces, so the median size of the
+    piece-shaped blobs is a stable estimate -- adjacent pieces are 16% apart, and the merged mass
+    of a filled board is excluded by the size window.
+    """
+    grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    raw = (grey > 40).astype(np.uint8) * 255
+    ref, board, bands = layout(img)
+    # Only where pieces can be: the two tray bands and the board area.  Scanning the whole window
+    # picks up the browser's own chrome -- a 1920-pixel-wide toolbar is brighter than any piece and
+    # swamped the median on the first attempt.
+    mask = np.zeros_like(raw)
+    for x0, x1, y0, y1 in bands.values():
+        mask[y0:y1, x0:x1] = raw[y0:y1, x0:x1]
+    mask[board.y:board.y + board.h, board.x:board.x + board.w] = \
+        raw[board.y:board.y + board.h, board.x:board.x + board.w]
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    n, _lab, stats, _c = cv2.connectedComponentsWithStats(mask, 8)
+    sizes = []
+    for i in range(1, n):
+        w, h = int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT])
+        if 60 <= w <= 260 and 50 <= h <= 200 and stats[i, cv2.CC_STAT_AREA] > 3000:
+            sizes.append((w, h))
+    if len(sizes) < 3:
+        return None
+    return int(np.median([w for w, _ in sizes])), int(np.median([h for _, h in sizes]))
+
+
+def detect_grid_size(img: np.ndarray) -> tuple[int, int]:
+    """(cells per side, piece width) -- the board's own width divided by one piece."""
+    _ref, board, _bands = layout(img)
+    piece = detect_piece_size(img)
+    if piece is None:
+        return 5, 0
+    n = max(2, min(8, int(round(board.w / float(piece[0])))))
+    return n, piece[0]
+
 def tray_slots_all(img: np.ndarray) -> list[tuple[int, int, int, int]]:
     """Every slot the tray can have, rather than the one geometry that was chosen.
 
