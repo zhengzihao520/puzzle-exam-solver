@@ -427,7 +427,7 @@ def main() -> int:
     ap.add_argument("--go", action="store_true")
     ap.add_argument("--edges", action="store_true", help="also read each piece's cut (one move per piece)")
     ap.add_argument("--max-moves", type=int, default=120)
-    ap.add_argument("--passes", type=int, default=4,
+    ap.add_argument("--passes", type=int, default=6,
                     help="how many times to walk the ring; a later pass may only offer pieces "
                          "and cells not already tried together, so it cannot spin forever")
     ap.add_argument("--size", type=int, default=0,
@@ -641,7 +641,16 @@ def main() -> int:
             # older runs wrote a bare [piece, cell] pair; newer ones add the refusal count
             piece, cell = row[0], row[1]
             tried[(piece, cell)] = row[2] if len(row) > 2 else 1
-        print(f"  {len(tried)} (piece, cell) pair(s) refused in earlier runs")
+        if not confirmed:
+            # A fresh game: the tray holds different pieces and the board wants different cells,
+            # so a pair refused in the previous game says nothing about this one.  Keeping it made
+            # the run open with "40 pair(s) refused in earlier runs" and skip good candidates --
+            # slot names are indices, not identities, so they mean something else on a new deal.
+            print(f"  {len(tried)} (piece, cell) pair(s) on disk, but the board is empty: "
+                  f"this is a new game, so they are forgotten")
+            tried.clear()
+        elif tried:
+            print(f"  {len(tried)} (piece, cell) pair(s) refused earlier in this same game")
     # One refusal does not condemn a pair.  The lock test itself is not perfect -- an audit of a
     # finished board counted 1 or 2 fewer cells than the loop had confirmed -- and when it calls a
     # good placement refused, the piece is dragged straight back off the cell.  Banning the pair
@@ -691,9 +700,14 @@ def main() -> int:
             order = ([plan[key]] if key in plan and plan[key] not in pieces.used else [])
             order = [k for k in order if tried.get((k, key), 0) < TRIES_ALLOWED]
             if not order:
+                # Later passes offer more of the same class.  A pure-white piece is the reason:
+                # five of them look identical (the panel cells for them are plain white tiles and
+                # the board draws nothing in an empty cell), so the only way to learn which white
+                # piece belongs where is to try one and let the engine refuse it.  Two candidates
+                # per pass was not enough to cover five white pieces before the passes ran out.
                 order = sorted((k for k in pieces.spare(wanted)
                                 if tried.get((k, key), 0) < TRIES_ALLOWED),
-                               key=shape_fit, reverse=True)[:2]
+                               key=shape_fit, reverse=True)[:min(4, 2 + attempt)]
             if not order:
                 # Last resort for a cell whose own piece the reader labelled as something else:
                 # offer *any* untried piece whose shape does not rule the cell out.  Bounded on
@@ -715,8 +729,9 @@ def main() -> int:
                 # misses flat sides far more often than it invents them, so demanding a flat
                 # bottom on a bottom-row cell once excluded every candidate and the cell was
                 # declared untryable.  Ordering by fit keeps that from happening while still
-                # trying the most plausible piece first.
-                order = sorted(pool, key=shape_fit, reverse=True)[:2]
+                # trying the most plausible piece first.  The budget grows per pass for the same
+                # reason as above: a cell whose piece was misread only gets filled by trying.
+                order = sorted(pool, key=shape_fit, reverse=True)[:min(4, 2 + attempt)]
             if not order:
                 print(f"    cell({key}) {wanted}: nothing left to try -- cell left empty")
                 continue
