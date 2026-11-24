@@ -470,6 +470,7 @@ def main() -> int:
               f"{'   SHORT' if have[c] < need[c] else ''}")
 
     edges: dict[str, dict] = {k: {s: None for s in SIDES} for k in pieces.tpl}
+    scores: dict[str, dict] = {}          # per side (tab, notch) evidence, for the flat call
     if args.edges and args.go:
         # White pieces are skipped.  All five carry the same pure-white picture, so any of them
         # fits any white cell and their cut shape decides nothing -- while a white-on-white edge
@@ -503,6 +504,7 @@ def main() -> int:
             cv2.imwrite(str(SHOTS / f"cut_{i:02d}.png"), shot)
             crop = (dark[0] - 56, dark[1] - 42, 112, 85)
             edges[key] = pe.read_edges_union(shot, crop)
+            scores[key] = pe.edge_scores(shot, crop)
             with CUTLOG.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps({"key": key, "crop": list(crop),
                                      "signs": edges[key]}) + "\n")
@@ -511,6 +513,32 @@ def main() -> int:
             mouse.glide((sx, sy))                  # put it back where it was
             mouse.release()
             time.sleep(0.12)
+
+    # Only a full board has this shape.  Mid-game the tray holds whatever is left, and its pieces
+    # are no longer five-per-side or four-cornered, so the structure below would be a false
+    # constraint there; partial boards keep the readers' own labels.
+    started_empty = not any(vision.has_piece(vision.sub(snap.img, b), 30)
+                            for b in snap.cells.values())
+    # The board states that five pieces must be flat on each side, and that four of them carry two
+    # flat sides (one horizontal, one vertical), twelve carry one, and the rest carry none.  Both
+    # readers disagree with that shape: colour alone calls 29 sides flat where 20 are wanted, and
+    # the union calls 15 with none at all on the right.  So the labels are demoted to evidence and
+    # the structure decides.  Measured on thirty recorded pieces this reproduces 5/5/5/5 and a
+    # 4/12/14 split exactly; before it, the same input gave 6/0/6/3.
+    if scores and started_empty:
+        chosen = pe.adjudicate_flats({k: {s: min(v) for s, v in d.items()}
+                                     for k, d in scores.items()}, n=N)
+        for key, ev in scores.items():
+            for side in SIDES:
+                if side in chosen.get(key, set()):
+                    edges[key][side] = "flat"
+                else:
+                    tab, notch = ev[side]
+                    edges[key][side] = "tab" if tab > notch else "notch"
+        per_side = Counter(s for v in chosen.values() for s in v)
+        print("  flats per side after adjudication: "
+              + "  ".join(f"{k[:1]} {per_side[k]}" for k in SIDES)
+              + f"   ({sum(per_side.values())} total; a 5x5 needs 20)")
 
     # ---- the assignment -----------------------------------------------------
     # Two independent readings of the same question.  The seam plan compares the whole

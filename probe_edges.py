@@ -344,6 +344,73 @@ def read_edges_boundary(img: np.ndarray, box, cut: float = 8.0) -> dict[str, tup
     return out
 
 
+def edge_scores(img: np.ndarray, box) -> dict[str, tuple[float, float]]:
+    """(tab, notch) evidence per side, from the colour silhouette.
+
+    The union reader answers with a label and its rule -- a tab or a notch wins over flat -- is why
+    flat sides get lost: on thirty real pieces colour alone calls 29 sides flat where the board
+    requires 20, and the union calls 15 with none at all on the right, because the engine's shadow
+    falls to the right (dx = +7) and a shadowed gap looks exactly like a dent.  The labels are not
+    what to trust; the ordering is.  This returns the numbers that ordering needs.
+    """
+    x, y, w, h = box
+    m, (x0, y0), _bg = piece_mask(img, box)
+    bx, by = x - x0, y - y0
+    out: dict[str, tuple[float, float]] = {}
+    for side in ("top", "right", "bottom", "left"):
+        outward = side_profile(m, bx, by, w, h, side, outward=True)
+        inward = side_profile(m, bx, by, w, h, side, outward=False)
+        tab = max((middle_vs_ends(outward[d]) for d in range(1, len(outward))), default=0.0)
+        notch = max((middle_vs_ends(1.0 - inward[d]) for d in range(1, len(inward))),
+                    default=0.0)
+        out[side] = (float(tab), float(notch))
+    return out
+
+
+def flat_evidence(img: np.ndarray, box) -> dict[str, float]:
+    """How little evidence there is of a tab or a notch, per side.  Low means flat."""
+    return {side: min(pair) for side, pair in edge_scores(img, box).items()}
+
+
+def adjudicate_flats(evidence: dict, n: int = 5) -> dict:
+    """Decide which pieces are flat on which side, using the board's own structure.
+
+    `evidence` maps a piece key to per-side flat evidence, lower meaning flatter.
+
+    Rank alone is not enough.  Sorting each side separately gave five flats per side, but nine
+    pieces ended up with two of them -- and a 5x5 has exactly four corner pieces, so most of those
+    were false corners, created because the same pieces sit at the weak end of several sides at
+    once.  The board fixes the shape of the answer: four corner pieces with one horizontal and one
+    vertical flat, twelve edge pieces with exactly one, nine interior pieces and the five decoys
+    with none.  That is 4*2 + 12 = 20 flat sides, five per direction.
+
+    Measured on thirty recorded pieces, this reproduces exactly that shape: 4 / 12 / 14.
+    """
+    sides = ("top", "right", "bottom", "left")
+    corners = (("top", "left"), ("top", "right"), ("bottom", "left"), ("bottom", "right"))
+    out: dict[str, set] = {k: set() for k in evidence}
+    used: set = set()
+
+    for a, b in corners:
+        pool = [k for k in evidence if k not in used]
+        if not pool:
+            break
+        best = min(pool, key=lambda k: evidence[k].get(a, 9.9) + evidence[k].get(b, 9.9))
+        out[best] = {a, b}
+        used.add(best)
+
+    for side in sides:
+        want = n - sum(1 for k in evidence if side in out[k])
+        for k in sorted((k for k in evidence if k not in used),
+                        key=lambda k: evidence[k].get(side, 9.9)):
+            if want <= 0:
+                break
+            out[k] = {side}
+            used.add(k)
+            want -= 1
+    return out
+
+
 def read_edges_union(img: np.ndarray, box) -> dict[str, str | None]:
     """Union of the colour silhouette and the boundary displacement.
 
