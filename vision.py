@@ -251,7 +251,8 @@ def detect_grid_size(img: np.ndarray) -> tuple[int, int]:
             best, best_err = n, err
     return (best, tray) if best_err <= 2 else (5, 0)
 
-def tray_slots_all(img: np.ndarray) -> list[tuple[int, int, int, int]]:
+def tray_slots_all(img: np.ndarray, piece: tuple[float, float] | None = None
+                   ) -> list[tuple[int, int, int, int]]:
     """Every slot the tray can have, rather than the one geometry that was chosen.
 
     calibrate_tray picks a single (top offset, row count) by scoring occupied slots, and it can
@@ -268,8 +269,8 @@ def tray_slots_all(img: np.ndarray) -> list[tuple[int, int, int, int]]:
     bottom_limit = _board.y + _board.h + 40
     out: dict[tuple[int, int], tuple[int, int, int, int]] = {}
     for band in ("left", "right"):
-        for top_rel in (TRAY_TOP_REL, TRAY_TOP_REL - TRAY_STEP[1]):
-            for _r, _c, box in lattice_slots(img, band, 6, top_rel):
+        for top_rel in (TRAY_TOP_REL, TRAY_TOP_REL - (TRAY_PIECE if piece is None else piece)[1] * 1.16):
+            for _r, _c, box in lattice_slots(img, band, 6, top_rel, piece):
                 x, y, w, h = box
                 if x < 0 or y < 0 or x + w > img.shape[1]:
                     continue
@@ -281,16 +282,23 @@ def tray_slots_all(img: np.ndarray) -> list[tuple[int, int, int, int]]:
 
 def lattice_slots(img: np.ndarray, band: str,
                   rows: int | None = None,
-                  top_rel: float | None = None
+                  top_rel: float | None = None,
+                  piece: tuple[float, float] | None = None
                   ) -> list[tuple[int, int, tuple[int, int, int, int]]]:
-    """(row, col, (x, y, w, h)) for a whole tray band, whatever is left in it."""
+    """(row, col, (x, y, w, h)) for a whole tray band, whatever is left in it.
+
+    `piece` is the piece's body size in screen pixels; the lattice pitch is 1.16 x that, which is
+    how the engine spaces them.  A 3x3 board deals pieces about 187x142, so the 5x5 constants
+    cannot be used there -- the slots would land in the gaps between pieces.
+    """
     ref = find_reference(img)
     sx, sy = ref.w / CAL_REF[0], ref.h / CAL_REF[1]
     x0 = ref.x + TRAY_COL_REL[band] * sx
     y0 = ref.y + (TRAY_TOP_REL if top_rel is None else top_rel) * sy
     rows = 6 if rows is None else rows
-    pw, ph = TRAY_PIECE[0] * sx, TRAY_PIECE[1] * sy
-    step_x, step_y = TRAY_STEP[0] * sx, TRAY_STEP[1] * sy
+    base = TRAY_PIECE if piece is None else piece
+    pw, ph = base[0] * sx, base[1] * sy
+    step_x, step_y = pw * 1.16, ph * 1.16
     return [(r, c, (round(x0 + c * step_x), round(y0 + r * step_y),
                     round(pw), round(ph)))
             for r in range(rows) for c in range(TRAY_COLS)]

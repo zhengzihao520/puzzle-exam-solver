@@ -66,7 +66,11 @@ class Snap:
         self.img = img
         self.ref, self.board, _ = vision.layout(img)
         self.cells = {f"{r},{c}": b for r, c, b in self.board.cells(N)}
-        self.slots = vision.tray_slots_all(img)
+        # A piece is one board cell, so its size follows from the grid: 112x85 on a 5x5, about
+        # 187x142 on a 3x3.  The tray lattice is built from that, otherwise the slots land in the
+        # gaps between pieces and the inventory sees nothing.
+        self.piece = (self.board.w / float(N), self.board.h / float(N))
+        self.slots = vision.tray_slots_all(img, self.piece)
         self.rows, self.top_rel, self.occ = 0, 0.0, sum(
             1 for b in self.slots if not vision.is_empty(vision.sub(img, b)))
         self.panel = {f"{r},{c}": b for r, c, b in self.ref.cells(N)}
@@ -426,12 +430,24 @@ def main() -> int:
     ap.add_argument("--passes", type=int, default=4,
                     help="how many times to walk the ring; a later pass may only offer pieces "
                          "and cells not already tried together, so it cannot spin forever")
+    ap.add_argument("--size", type=int, default=0,
+                    help="cells per side; 0 means read it from how many pieces were dealt")
     args = ap.parse_args()
     ok, why = check_foreground()
     print(f"foreground: {why}")
     if not ok:
         return 2
     mouse = Mouse()
+    global N
+    first = mouse.shot()
+    if args.size:
+        N = int(args.size)
+        print(f"grid: {N}x{N} (from --size)")
+    else:
+        detected, dealt = vision.detect_grid_size(first)
+        N = detected
+        print(f"grid: {N}x{N} (from {dealt} pieces dealt)" if dealt
+              else f"grid: {N}x{N} (pieces not countable; assuming 5x5)")
     # A crash between mouseDown and mouseUp would leave the button held, and the next grab then
     # drags whatever the pointer is over -- pieces strewn about, a cell lost for the game.  The
     # live run did exactly that when pyautogui's fail-safe fired mid-drag.
