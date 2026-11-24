@@ -621,21 +621,18 @@ def main() -> int:
                 # the engine is still animating the drop gets a "cannot lift" answer for a drop
                 # that has not actually taken, which is how a cell got credited without a piece.
                 time.sleep(0.28)
-                # Press the piece where it actually is, not where the cell is.  A dropped piece
-                # that did not snap lies near the cell but not on it, and five presses around the
-                # cell's centre then all land on empty board: nothing moves, which reads as
-                # "cannot lift" and credits a cell that has no piece in it.  That is the one cell
-                # by which the loop kept overrunning its own audit.
-                probe = after.cells[key]
-                where, _w = locate(after, pieces.tpl[pk])
-                if where is not None:
-                    probe = where
-                locked = press_is_locked(mouse, probe)
+                # Press the cell the piece was dropped on, not a box found by fingerprint: the
+                # drop point is known exactly, and locate() can answer with a different cell's
+                # piece, leaving the probe pressing empty board.  With brightness + texture this
+                # catches the drop that did not take -- a piece lifted off (3,3) on a live board
+                # took the cell from 54 to 37, a drop of 17, which the old fixed threshold of 25
+                # read as "still there" and credited the cell.
+                locked = press_is_locked(mouse, after.cells[key])
                 if not locked:
                     # The same probe gives different answers a second apart: the snap animation is
                     # still settling.  Ask again once it has calmed down and take the later answer.
                     time.sleep(0.45)
-                    locked = press_is_locked(mouse, probe)
+                    locked = press_is_locked(mouse, after.cells[key])
                 if locked:
                     confirmed[key] = pk
                     pieces.used.add(pk)
