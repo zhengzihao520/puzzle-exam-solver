@@ -228,29 +228,46 @@ def count_tray_pieces(img: np.ndarray) -> int:
 
 
 def detect_grid_size(img: np.ndarray) -> tuple[int, int]:
-    """(cells per side, pieces dealt) from how many pieces the game dealt.
+    """(cells per side, pieces dealt) by dividing the board by one piece.
 
-    The exam deals cells x 1.2 pieces, so the total identifies the difficulty: 9+2 = 11,
-    16+3 = 19, 25+5 = 30.  Those are far apart, and this program counts tray pieces accurately --
-    thirty of thirty, repeatedly.
+    Two measurements that do not depend on each other: the board rectangle, which `layout` derives
+    from the reference panel and which is 560x425 at every difficulty (checked: a 3x3 board also
+    measures 560, so the engine does NOT scale it), and the median width of the pieces in the tray.
+    Their quotient is the grid: 560/187.5 = 3 on a 3x3, 560/112 = 5 on a 5x5.
 
-    Two earlier attempts measured the piece instead and both produced confident nonsense on a
-    board that was plainly 5x5: blob width is inflated by the tabs (112 px of body reads as 144)
-    and gave 4, and blob pitch merged across gaps and gave 3.  A wrong grid size does not look
-    wrong downstream -- it silently mis-lays every piece -- so the rule now is count, and say
-    nothing if the count does not match a difficulty.
-
-    Valid at the start of a game, when the tray holds every piece.
+    Three earlier attempts failed and their reasons are worth keeping.  Scanning the whole window
+    measured the browser toolbar (1920 px) instead of a piece.  Closing the mask merged neighbours,
+    inflating the median.  And assuming a grid in order to count pieces -- then checking the count
+    against that assumption -- was circular: a 5x5 lattice sampled each big 3x3 piece several times
+    and reported thirty "occupied" slots, which is exactly thirty and so looked correct.
     """
-    tray = count_tray_pieces(img)
-    best, best_err = 5, 99
-    for n in (3, 4, 5, 6):
-        want = n * n + round(n * n * 0.2)
-        err = abs(tray - want)
-        if err < best_err:
-            best, best_err = n, err
-    return (best, tray) if best_err <= 2 else (5, 0)
+    _ref, board, bands = layout(img)
+    piece_w, _widths = piece_width_median(img, bands)
+    if piece_w:
+        n = int(round(board.w / piece_w))
+        if 2 <= n <= 6:
+            return n, piece_w
+    return 5, 0
 
+
+def piece_width_median(img: np.ndarray, bands) -> tuple[float | None, list[int]]:
+    """Median width of the piece-sized blobs in the tray bands, and all the widths seen.
+
+    No morphological close: it bridges the 18 px gaps between neighbours and merges them into one
+    blob, which is exactly the failure that made an earlier attempt report 219 px per piece.
+    """
+    grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    mask = np.zeros_like(grey)
+    for x0, x1, y0, y1 in bands.values():
+        mask[y0:y1, x0:x1] = grey[y0:y1, x0:x1]
+    m = (mask > 40).astype(np.uint8)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    n, _l, stats, _c = cv2.connectedComponentsWithStats(m, 8)
+    widths = [int(stats[i, cv2.CC_STAT_WIDTH]) for i in range(1, n)
+              if stats[i, cv2.CC_STAT_AREA] > 3000]
+    if len(widths) < 3:
+        return None, widths
+    return float(np.median(widths)), widths
 def tray_slots_all(img: np.ndarray, piece: tuple[float, float] | None = None
                    ) -> list[tuple[int, int, int, int]]:
     """Every slot the tray can have, rather than the one geometry that was chosen.
@@ -267,10 +284,20 @@ def tray_slots_all(img: np.ndarray, piece: tuple[float, float] | None = None
     ref = find_reference(img)
     _board = layout(img)[1]
     bottom_limit = _board.y + _board.h + 40
+    base = TRAY_PIECE if piece is None else piece
+    # Columns per band, the engine's own rule: the band reaches from the canvas edge to the board,
+    # Columns per band, the engine's own rule: floor(bandWidth / (pieceWidth * 1.16)), where the
+    # band runs from the canvas edge to the board.  The canvas edge is not the first slot's x --
+    # that sits (step - piece)/2 further in -- and confusing the two cost exactly one column:
+    # 3x3 came out as one column per band when it is two.
+    canvas_left = ref.x + TRAY_COL_REL["left"] - (TRAY_PIECE[0] * 0.16) / 2.0
+    band_width = _board.x - canvas_left
+    step = max(1.0, base[0] * 1.16)
+    cols = max(1, int(band_width // step))
     out: dict[tuple[int, int], tuple[int, int, int, int]] = {}
     for band in ("left", "right"):
-        for top_rel in (TRAY_TOP_REL, TRAY_TOP_REL - (TRAY_PIECE if piece is None else piece)[1] * 1.16):
-            for _r, _c, box in lattice_slots(img, band, 6, top_rel, piece):
+        for top_rel in (TRAY_TOP_REL, TRAY_TOP_REL - base[1] * 1.16):
+            for _r, _c, box in lattice_slots(img, band, 6, top_rel, piece, cols):
                 x, y, w, h = box
                 if x < 0 or y < 0 or x + w > img.shape[1]:
                     continue
@@ -283,13 +310,16 @@ def tray_slots_all(img: np.ndarray, piece: tuple[float, float] | None = None
 def lattice_slots(img: np.ndarray, band: str,
                   rows: int | None = None,
                   top_rel: float | None = None,
-                  piece: tuple[float, float] | None = None
+                  piece: tuple[float, float] | None = None,
+                  cols: int | None = None
                   ) -> list[tuple[int, int, tuple[int, int, int, int]]]:
     """(row, col, (x, y, w, h)) for a whole tray band, whatever is left in it.
 
     `piece` is the piece's body size in screen pixels; the lattice pitch is 1.16 x that, which is
-    how the engine spaces them.  A 3x3 board deals pieces about 187x142, so the 5x5 constants
-    cannot be used there -- the slots would land in the gaps between pieces.
+    how the engine spaces them.  `cols` matters just as much: the engine fits
+    floor(bandWidth / step) columns per band, which is three at 5x5 but only one at 3x3, where the
+    pieces are 187 px wide and the band is 423.  Three columns there would put two of them on the
+    board itself.
     """
     ref = find_reference(img)
     sx, sy = ref.w / CAL_REF[0], ref.h / CAL_REF[1]
@@ -299,9 +329,10 @@ def lattice_slots(img: np.ndarray, band: str,
     base = TRAY_PIECE if piece is None else piece
     pw, ph = base[0] * sx, base[1] * sy
     step_x, step_y = pw * 1.16, ph * 1.16
+    cols = TRAY_COLS if cols is None else max(1, cols)
     return [(r, c, (round(x0 + c * step_x), round(y0 + r * step_y),
                     round(pw), round(ph)))
-            for r in range(rows) for c in range(TRAY_COLS)]
+            for r in range(rows) for c in range(cols)]
 
 
 def calibrate_tray(img: np.ndarray, expected: int = 30, verbose: bool = False):
