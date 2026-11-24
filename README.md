@@ -227,6 +227,9 @@ python probe_locked.py 0,4             # 单独查某格是否已吸附
 **前置条件**：浏览器窗口**最大化**且在前台，页面停在考核里、棋盘可见。
 程序会先自检窗口与前景，不满足就直接退出，不会乱点。
 
+**最省事**：双击仓库里的 `dry.bat`（只看）或 `run.bat`（执行）——它们会等你 10 秒去点浏览器，
+结束时把退出码打出来。
+
 ```powershell
 cd F:\exam_next
 D:\python\python.exe stateless.py --dry           # 只识别 + 规划，一个鼠标动作都不做
