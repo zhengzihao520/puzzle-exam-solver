@@ -554,11 +554,32 @@ def main() -> int:
             # already been refused here.  The exam gives a decoy of a class it also needs, so the
             # plan's first choice can be the one that does not fit this cell, and with a single
             # candidate the run would keep re-proposing it instead of trying the other copy.
+            def shape_fit(pk: str) -> int:
+                """How well does this piece's flat sides suit this cell?
+
+                A corner wants two flats facing out, an edge piece one, an interior piece none --
+                that is board geometry, not a reading.  So a piece showing a flat on a side that
+                faces the middle of the board is a point against it, and one showing a flat where
+                the board's edge is, a point for it.  This decides the *order* of attempts inside
+                a class: the class says nothing about which of four dogs fits, and getting that
+                order wrong is what a refusal costs -- two moves, one to find out and one to put
+                the piece back.
+                """
+                score = 0
+                for side in SIDES:
+                    if EDGE_SIGN[edges[pk].get(side)] != 0:
+                        continue
+                    on_edge = {"top": r == 0, "bottom": r == N - 1,
+                               "left": c == 0, "right": c == N - 1}[side]
+                    score += 1 if on_edge else -1
+                return score
+
             order = ([plan[key]] if key in plan and plan[key] not in pieces.used else [])
             order = [k for k in order if tried.get((k, key), 0) < TRIES_ALLOWED]
             if not order:
-                order = [k for k in pieces.spare(wanted)
-                         if tried.get((k, key), 0) < TRIES_ALLOWED][:2]
+                order = sorted((k for k in pieces.spare(wanted)
+                                if tried.get((k, key), 0) < TRIES_ALLOWED),
+                               key=shape_fit, reverse=True)[:2]
             if not order:
                 # Last resort for a cell whose own piece the reader labelled as something else:
                 # offer *any* untried piece whose shape does not rule the cell out.  Bounded on
@@ -576,12 +597,12 @@ def main() -> int:
 
                 pool = [k for k in pieces.spare()
                         if tried.get((k, key), 0) < TRIES_ALLOWED]
-                strict = [k for k in pool if shape_allows(k)]
-                # shape first, but never to the point of having nothing to offer: the reader
-                # misses flat sides far more often than it invents them (25 pieces produced 0
-                # flat lefts), so demanding a flat bottom on a bottom-row cell excluded every
-                # candidate and the cell was then declared untryable.
-                order = (strict or pool)[:2]
+                # Shape first, but never to the point of having nothing to offer: the reader
+                # misses flat sides far more often than it invents them, so demanding a flat
+                # bottom on a bottom-row cell once excluded every candidate and the cell was
+                # declared untryable.  Ordering by fit keeps that from happening while still
+                # trying the most plausible piece first.
+                order = sorted(pool, key=shape_fit, reverse=True)[:2]
             if not order:
                 print(f"    cell({key}) {wanted}: nothing left to try -- cell left empty")
                 continue
