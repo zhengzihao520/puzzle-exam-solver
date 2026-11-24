@@ -22,6 +22,7 @@ is exact, instead of by the network.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 
 import cv2
@@ -228,19 +229,25 @@ def count_tray_pieces(img: np.ndarray) -> int:
 
 
 def detect_grid_size(img: np.ndarray) -> tuple[int, int]:
-    """(cells per side, pieces dealt) by dividing the board by one piece.
+    """(cells per side, pieces dealt).  Count the tray first; width is only the fallback.
 
-    Two measurements that do not depend on each other: the board rectangle, which `layout` derives
-    from the reference panel and which is 560x425 at every difficulty (checked: a 3x3 board also
-    measures 560, so the engine does NOT scale it), and the median width of the pieces in the tray.
-    Their quotient is the grid: 560/187.5 = 3 on a 3x3, 560/112 = 5 on a 5x5.
+    The engine deals ceil-to-target pieces: 30 for 5x5, 19 for 4x4, 11 for 3x3 -- always
+    N*N*1.2, because `moveTarget = ceil(pieces * 1.3)` and the deal overshoots by a margin.  So
+    one exact count gives N = sqrt(count/1.2), and the union-slot scan in `tray_slots_all` does
+    count exactly: 30/30 on a live 5x5 board.
 
-    Three earlier attempts failed and their reasons are worth keeping.  Scanning the whole window
-    measured the browser toolbar (1920 px) instead of a piece.  Closing the mask merged neighbours,
-    inflating the median.  And assuming a grid in order to count pieces -- then checking the count
-    against that assumption -- was circular: a 5x5 lattice sampled each big 3x3 piece several times
-    and reported thirty "occupied" slots, which is exactly thirty and so looked correct.
+    Width was the primary signal and it lied on a live 5x5: every piece carries a ~20 px drop
+    shadow (offset dx=+7, dy=+12), which inflates the median blob from 112 to 133, and
+    560/133 = 4.2 rounds to 4.  That is how a 5x5 board was announced as 4x4.
+
+    Width is kept as a fallback for a tray the slot scan cannot read, and as a cross-check: when
+    both measurements agree, the guess is as good as it gets.
     """
+    dealt = count_tray_pieces(img)
+    if dealt:
+        n = int(round(math.sqrt(dealt / 1.2)))
+        if 2 <= n <= 6 and abs(dealt - n * n * 1.2) <= 2.0:
+            return n, dealt
     _ref, board, bands = layout(img)
     piece_w, _widths = piece_width_median(img, bands)
     if piece_w:

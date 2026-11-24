@@ -451,10 +451,13 @@ def main() -> int:
         N = int(args.size)
         print(f"grid: {N}x{N} (from --size)")
     else:
-        detected, dealt = vision.detect_grid_size(first)
+        detected, evidence = vision.detect_grid_size(first)
         N = detected
-        print(f"grid: {N}x{N} (from {dealt} pieces dealt)" if dealt
-              else f"grid: {N}x{N} (pieces not countable; assuming 5x5)")
+        held = vision.count_tray_pieces(first)
+        print(f"grid: {N}x{N} (tray holds {held} pieces, expected {int(round(N * N * 1.2))}; "
+              f"width hint {evidence:.0f}px)")
+        if held and abs(held - N * N * 1.2) > 1.5:
+            print(f"      !! {held} pieces does not fit {N}x{N} -- pass --size to override")
     # A crash between mouseDown and mouseUp would leave the button held, and the next grab then
     # drags whatever the pointer is over -- pieces strewn about, a cell lost for the game.  The
     # live run did exactly that when pyautogui's fail-safe fired mid-drag.
