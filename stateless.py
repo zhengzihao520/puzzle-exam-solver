@@ -741,10 +741,21 @@ def main() -> int:
 
     final = Snap(mouse.shot())
     cv2.imwrite(str(SHOTS / "stateless_end.png"), final.img)
+    # Once every cell is filled the engine swaps the board for a results screen.  Pressing and
+    # dragging at cell coordinates then means pressing and dragging on whatever button happens to
+    # be there -- on the last live run that started a fresh game, and the audit that did it read
+    # 14 cells against the loop's 25 because it was measuring the new screen.  So: no probes at
+    # all once the board is complete, and the completion is reported from the loop's own count.
+    if len(confirmed) == N * N:
+        print(f"\nmoves: {moves}")
+        print(f"board complete: {len(confirmed)}/{N * N} cells confirmed by the loop")
+        print("no further probing: the page is a results screen now, and pressing there would "
+              "click whatever is underneath the cell coordinates")
+        print(f"refused attempts by class pair: {dict(refused)}")
+        return 0
     locked = [k for k in final.cells
               if vision.has_piece(vision.sub(final.img, final.cells[k]), 30)
               and press_is_locked(mouse, final.cells[k])]
-    print(f"\nmoves: {moves}")
     print(f"confirmed by the loop: {len(confirmed)}   confirmed by a final 5-point audit: "
           f"{len(locked)}")
     print(f"refused attempts by class pair: {dict(refused)}")
