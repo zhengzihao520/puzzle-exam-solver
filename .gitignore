@@ -10,7 +10,9 @@ dataset/labelImg/
 # 运行时产物
 logs/
 shots/
+# 录像默认不入库（`.mp4` 体积大）；只放行完整通关那一条，交付时要能直接看见证据
 *.mp4
+!demo/part3_perfect_25of25.mp4
 __pycache__/
 *.pyc
 
