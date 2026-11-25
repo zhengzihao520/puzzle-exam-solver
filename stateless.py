@@ -34,6 +34,7 @@ import jigsaw
 import panel_match as pm
 import probe_edges as pe
 import vision
+import white_edges as we
 from identify import BLANK, Identifier
 from solve_live import Mouse, _enable_dpi, check_foreground, centre
 
@@ -494,6 +495,21 @@ def main() -> int:
               f"{'   SHORT' if have[c] < need[c] else ''}")
 
     edges: dict[str, dict] = {k: {s: None for s in SIDES} for k in pieces.tpl}
+    # White pieces: their cuts are readable from their own silhouette, at no cost and without
+    # touching the mouse.  Until this was wired in, the loop had no information at all about which
+    # white piece belongs where, so it guessed -- and each wrong guess costs two moves, with one
+    # recorded run spending 22 refusals (44 moves) inside the white set alone.  These readings only
+    # order the candidates: the engine's snap still decides.
+    whites = [k for k in pieces.tpl if pieces.cls[k] == BLANK]
+    if whites:
+        sig = {}
+        for k in whites:
+            edges[k] = we.read_white_edges(snap.img, pieces.box[k])
+            sig[k] = " ".join(f"{s[0]}:{edges[k][s] or '?'}" for s in SIDES)
+        print(f"\nwhite pieces, cuts read from their own outline (no moves): ")
+        for k in whites:
+            known = sum(1 for s in SIDES if edges[k][s])
+            print(f"  {k}: {sig[k]}   ({known}/4 sides readable)")
     scores: dict[str, dict] = {}          # per side (tab, notch) evidence, for the flat call
     if args.edges and args.go:
         # White pieces are skipped.  All five carry the same pure-white picture, so any of them
