@@ -723,19 +723,21 @@ def main() -> int:
                             return False
                     return True
 
+                # With only a few cells left, every unused piece is fair game and the per-pair
+                # refusal count stops applying: a lock probe misses often (an audit of a finished
+                # board counted 1-3 fewer cells than the loop had confirmed), so "refused three
+                # times" is not proof, and two recorded runs stopped at 24 of 25 with the piece
+                # that fits still in the tray because every pair had used up its allowance.
+                late = len(open_cells) - len(confirmed) <= 3
                 pool = [k for k in pieces.spare()
-                        if tried.get((k, key), 0) < TRIES_ALLOWED]
+                        if late or tried.get((k, key), 0) < TRIES_ALLOWED]
                 # Shape first, but never to the point of having nothing to offer: the reader
                 # misses flat sides far more often than it invents them, so demanding a flat
                 # bottom on a bottom-row cell once excluded every candidate and the cell was
                 # declared untryable.  Ordering by fit keeps that from happening while still
                 # trying the most plausible piece first.  The budget grows per pass for the same
                 # reason as above: a cell whose piece was misread only gets filled by trying.
-                # With only a few cells left the whole remaining tray is fair game: a pair refused
-                # twice is no proof of anything (one refusal is often the lock probe misreading),
-                # and a run that gave up here finished a Part 3 board on 24 of 25 cells with the
-                # piece that fits still sitting in the tray.
-                room = 4 if len(open_cells) - len(confirmed) <= 3 else min(4, 2 + attempt)
+                room = 4 if late else min(4, 2 + attempt)
                 order = sorted(pool, key=shape_fit, reverse=True)[:max(1, min(len(pool), room))]
             if not order:
                 print(f"    cell({key}) {wanted}: nothing left to try -- cell left empty")
