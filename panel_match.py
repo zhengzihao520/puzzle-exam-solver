@@ -59,6 +59,18 @@ def similarity(piece: np.ndarray, cell_padded: np.ndarray) -> float:
         return -1.0
     return float(cv2.matchTemplate(cell_padded, piece, cv2.TM_CCOEFF_NORMED).max())
 
+def _scores(img: np.ndarray, pieces, cells: dict[str, tuple]) -> dict[tuple[str, str], float]:
+    panel = {k: _prep(img, b, EXTRA) for k, b in cells.items()}
+    scores: dict[tuple[str, str], float] = {}
+    for pk, box in pieces.box.items():
+        if pk in getattr(pieces, "used", ()):      # already placed this run
+            continue
+        mine = _prep(img, box)
+        for ck, crop in panel.items():
+            scores[(pk, ck)] = similarity(mine, crop)
+    return scores
+
+
 def plan_from_panel(img: np.ndarray, pieces, cells: dict[str, tuple],
                     floor: float = -1.0) -> tuple[dict[str, str], dict[str, float]]:
     """({cell key: piece key}, {cell: score}) from picture matching alone.
@@ -67,15 +79,23 @@ def plan_from_panel(img: np.ndarray, pieces, cells: dict[str, tuple],
     ranking is sharp, and greedy keeps the code readable.  `cells` should be the cells that still
     need a piece -- a filled cell's picture matches a placed piece and would steal its score.
     """
-    panel = {k: _prep(img, b, EXTRA) for k, b in cells.items()}
-    scores: dict[tuple[str, str], float] = {}
-    for pk, box in pieces.box.items():
-        if pk in getattr(pieces, "used", ()):  # already placed this run
-            continue
-        mine = _prep(img, box)
-        for ck, crop in panel.items():
-            scores[(pk, ck)] = similarity(mine, crop)
+    plan, conf, _margin = plan_and_margins(img, pieces, cells, floor)
+    return plan, conf
 
+
+def plan_and_margins(img: np.ndarray, pieces, cells: dict[str, tuple],
+                     floor: float = -1.0) -> tuple[dict[str, str], dict[str, float],
+                                                    dict[str, float]]:
+    """As plan_from_panel, plus how far ahead the winning piece is for each cell.
+
+    The margin is the tool against a real failure: the engine snaps on *geometry* alone, so a
+    piece can lock into a different cell that happens to have the same cuts, and once locked it
+    cannot be lifted -- its own cell is then left with nothing that fits.  Measured on three
+    Part 3 runs, that is how the last cell was lost.  A cell whose picture match is far ahead of
+    every other piece is safe to fill early; a cell where two pieces are close is exactly the one
+    that can steal, so those are the ones to leave until the tray has thinned out.
+    """
+    scores = _scores(img, pieces, cells)
     used_pieces: set[str] = set()
     plan: dict[str, str] = {}
     conf: dict[str, float] = {}
@@ -85,4 +105,9 @@ def plan_from_panel(img: np.ndarray, pieces, cells: dict[str, tuple],
         plan[ck] = pk
         conf[ck] = sc
         used_pieces.add(pk)
-    return plan, conf
+
+    margin: dict[str, float] = {}
+    for ck in cells:
+        ranked = sorted((sc for (pk, c2), sc in scores.items() if c2 == ck), reverse=True)
+        margin[ck] = ranked[0] - ranked[1] if len(ranked) > 1 else 1.0
+    return plan, conf, margin

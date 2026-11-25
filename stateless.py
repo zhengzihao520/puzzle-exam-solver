@@ -595,12 +595,16 @@ def main() -> int:
     # Picture matching against the panel comes first: it identifies each piece's own cell, which is
     # what a person means by "look at the reference picture", and it costs no moves.  The read cuts
     # and the class readers are then only needed for whatever it could not place.
-    p_plan, p_conf = pm.plan_from_panel(snap.img, pieces,
-                                        {k: snap.panel[k] for k in open_cells})
+    p_plan, p_conf, p_margin = pm.plan_and_margins(snap.img, pieces,
+                                                  {k: snap.panel[k] for k in open_cells})
     if p_conf:
         confs = sorted(p_conf.values(), reverse=True)
         print(f"  panel plan: {len(p_plan)}/{len(open_cells)} cell(s) matched by picture, "
               f"best {confs[0]:.2f} / median {confs[len(confs) // 2]:.2f}")
+        weak_set = {k for k, m in p_margin.items() if m < 0.10}
+        print(f"  {len(weak_set)} cell(s) where two pieces are too close to tell apart (filled last)")
+    else:
+        weak_set = set()
     plan = p_plan if p_plan else seam_plan(mouse, pieces, cell_cls, edges)
     jp = {k: jigsaw.Piece(k, pieces.cls[k],
                           {s: EDGE_SIGN[edges[k].get(s)] for s in SIDES})
@@ -665,6 +669,11 @@ def main() -> int:
                 break
             key = f"{r},{c}"
             if key in confirmed:
+                continue
+            # Ambiguous cells wait for the second pass: their piece is the one that can be snapped
+            # into a same-shaped neighbour by mistake, and a stolen piece cannot be recovered.
+            # Filling the certain cells first leaves the ambiguous ones a thinner tray.
+            if attempt == 0 and key in weak_set:
                 continue
             snap = Snap(mouse.shot())                 # fresh geometry, every time
             anchored = (r in (0, N - 1) or c in (0, N - 1)
@@ -823,7 +832,7 @@ def main() -> int:
                 break            # one piece per cell per pass: no candidate roulette
         if progress == 0:
             print(f"  no progress in this pass, {tries} attempt(s) made")
-            if tries == 0:
+            if tries == 0 and attempt > 0:
                 break          # nothing left to offer anywhere; another pass would be identical
 
     final = Snap(mouse.shot())
