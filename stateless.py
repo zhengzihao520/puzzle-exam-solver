@@ -688,6 +688,16 @@ def main() -> int:
             if not anchored:
                 continue
             wanted = cells[key]
+            # A white piece may only go to a white cell -- with one exception, the endgame.  The
+            # engine snaps on geometry, so a white piece offered to a photo cell can lock there and
+            # starve a white cell; but a cell whose panel read came out wrong is sometimes filled by
+            # exactly such a piece, and blocking that cost more completions than it saved (nine
+            # recorded attempts after the strict rule: 19/21/21/24 and one 25/25).  So the rule
+            # holds while the tray is still full and relaxes in the last two passes.
+            strict_white = attempt < args.passes - 2
+
+            def white_ok(pk: str) -> bool:
+                return (not strict_white) or cells[key] == BLANK or pieces.cls[pk] != BLANK
             # The planned piece first, then at most two others of the same class that have not
             # already been refused here.  The exam gives a decoy of a class it also needs, so the
             # plan's first choice can be the one that does not fit this cell, and with a single
@@ -725,7 +735,7 @@ def main() -> int:
                 # photo class and end up on a photo cell -- where geometry may accept it and a
                 # white cell is left without its piece.
                 order = sorted((k for k in pieces.spare(wanted)
-                                if (cells[key] == BLANK or pieces.cls[k] != BLANK)
+                                if white_ok(k)
                                 and tried.get((k, key), 0) < TRIES_ALLOWED),
                                key=shape_fit, reverse=True)[:min(4, 2 + attempt)]
             if not order:
@@ -755,7 +765,7 @@ def main() -> int:
                 # ended on 24 of 25 with a white cell empty and every white piece already placed:
                 # the last-resort pool had handed a white piece to a photo cell.
                 pool = [k for k in pieces.spare()
-                        if (cells[key] == BLANK or pieces.cls[k] != BLANK)
+                        if white_ok(k)
                         and (late or tried.get((k, key), 0) < TRIES_ALLOWED)]
                 # Shape first, but never to the point of having nothing to offer: the reader
                 # misses flat sides far more often than it invents them, so demanding a flat
@@ -772,7 +782,7 @@ def main() -> int:
             # 24 of 25 with two or three pieces in the tray that were never offered to that cell.
             if len(open_cells) - len(confirmed) <= 3:
                 spare = [k for k in pieces.spare()
-                         if k not in order and (cells[key] == BLANK or pieces.cls[k] != BLANK)]
+                         if k not in order and white_ok(k)]
                 spare.sort(key=shape_fit, reverse=True)
                 order += spare[:max(0, 4 - len(order))]
             if not order:
