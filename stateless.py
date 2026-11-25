@@ -720,8 +720,13 @@ def main() -> int:
                 # the board draws nothing in an empty cell), so the only way to learn which white
                 # piece belongs where is to try one and let the engine refuse it.  Two candidates
                 # per pass was not enough to cover five white pieces before the passes ran out.
+                # The white-piece rule below applies here too: `allow` keeps a doubtful reading's
+                # second class, so a white piece whose classifier hesitated can be listed as a
+                # photo class and end up on a photo cell -- where geometry may accept it and a
+                # white cell is left without its piece.
                 order = sorted((k for k in pieces.spare(wanted)
-                                if tried.get((k, key), 0) < TRIES_ALLOWED),
+                                if (cells[key] == BLANK or pieces.cls[k] != BLANK)
+                                and tried.get((k, key), 0) < TRIES_ALLOWED),
                                key=shape_fit, reverse=True)[:min(4, 2 + attempt)]
             if not order:
                 # Last resort for a cell whose own piece the reader labelled as something else:
@@ -766,7 +771,8 @@ def main() -> int:
             # entries the last-resort branch above never runs -- which is how runs kept ending on
             # 24 of 25 with two or three pieces in the tray that were never offered to that cell.
             if len(open_cells) - len(confirmed) <= 3:
-                spare = [k for k in pieces.spare() if k not in order]
+                spare = [k for k in pieces.spare()
+                         if k not in order and (cells[key] == BLANK or pieces.cls[k] != BLANK)]
                 spare.sort(key=shape_fit, reverse=True)
                 order += spare[:max(0, 4 - len(order))]
             if not order:
