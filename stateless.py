@@ -764,6 +764,15 @@ def main() -> int:
                 # reason as above: a cell whose piece was misread only gets filled by trying.
                 room = 4 if late else min(4, 2 + attempt)
                 order = sorted(pool, key=shape_fit, reverse=True)[:max(1, min(len(pool), room))]
+            # With only a couple of cells left, the rest of the tray joins the queue whatever class
+            # the reader gave it.  The piece that still fits one of the last cells is sometimes the
+            # one the reader labelled as another class, and while the same-class pool still has
+            # entries the last-resort branch above never runs -- which is how runs kept ending on
+            # 24 of 25 with two or three pieces in the tray that were never offered to that cell.
+            if len(open_cells) - len(confirmed) <= 3:
+                spare = [k for k in pieces.spare() if k not in order]
+                spare.sort(key=shape_fit, reverse=True)
+                order += spare[:max(0, 4 - len(order))]
             if not order:
                 print(f"    cell({key}) {wanted}: nothing left to try -- cell left empty")
                 continue
