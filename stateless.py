@@ -670,10 +670,20 @@ def main() -> int:
             key = f"{r},{c}"
             if key in confirmed:
                 continue
-            # Ambiguous cells wait for the second pass: their piece is the one that can be snapped
-            # into a same-shaped neighbour by mistake, and a stolen piece cannot be recovered.
-            # Filling the certain cells first leaves the ambiguous ones a thinner tray.
-            if attempt == 0 and key in weak_set:
+            # Two reasons to fill a cell later rather than sooner.
+            #
+            # Ambiguous cells (a second piece within 0.10 of the winner) are the ones that can be
+            # stolen: the engine snaps on geometry, so a piece can lock into a same-shaped
+            # neighbour and can never be lifted again.
+            #
+            # Pure-white cells go last of all, and that is a measured cost, not a hunch: five white
+            # pieces are indistinguishable, so each wrong guess costs two moves.  On a recorded run
+            # 22 of the ~30 refusals were blank-into-blank, 44 moves spent before any photo cell
+            # could try again.  Their candidate set is disjoint from the photo cells' anyway, so
+            # there is nothing to lose by leaving them to the end.
+            if attempt == 0 and (key in weak_set or cells[key] == BLANK):
+                continue
+            if attempt == 1 and cells[key] == BLANK:
                 continue
             snap = Snap(mouse.shot())                 # fresh geometry, every time
             anchored = (r in (0, N - 1) or c in (0, N - 1)
