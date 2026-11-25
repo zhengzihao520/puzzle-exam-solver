@@ -748,8 +748,14 @@ def main() -> int:
                 # times" is not proof, and two recorded runs stopped at 24 of 25 with the piece
                 # that fits still in the tray because every pair had used up its allowance.
                 late = len(open_cells) - len(confirmed) <= 3
+                # A pure-white piece is only ever offered to a pure-white cell.  The engine snaps
+                # on geometry, not identity, so a white piece put on a photo cell can lock there --
+                # and then a white cell has nothing left that fits.  That is exactly how one run
+                # ended on 24 of 25 with a white cell empty and every white piece already placed:
+                # the last-resort pool had handed a white piece to a photo cell.
                 pool = [k for k in pieces.spare()
-                        if late or tried.get((k, key), 0) < TRIES_ALLOWED]
+                        if (cells[key] == BLANK or pieces.cls[k] != BLANK)
+                        and (late or tried.get((k, key), 0) < TRIES_ALLOWED)]
                 # Shape first, but never to the point of having nothing to offer: the reader
                 # misses flat sides far more often than it invents them, so demanding a flat
                 # bottom on a bottom-row cell once excluded every candidate and the cell was
