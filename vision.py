@@ -228,33 +228,35 @@ def count_tray_pieces(img: np.ndarray) -> int:
     return sum(1 for b in tray_slots_all(img) if not is_empty(sub(img, b)))
 
 
+N_SIDE = 5           # the only difficulty this program plays
+PIECES_DEALT = 30    # N*N pieces plus N*N*0.2 decoys: 25 + 5
+
+
 def detect_grid_size(img: np.ndarray) -> tuple[int, int]:
-    """(cells per side, pieces dealt).  Count the tray first; width is only the fallback.
+    """(5, pieces in the tray) if this is the 5x5 exam, else (0, pieces) as a refusal.
 
-    The engine deals ceil-to-target pieces: 30 for 5x5, 19 for 4x4, 11 for 3x3 -- always
-    N*N*1.2, because `moveTarget = ceil(pieces * 1.3)` and the deal overshoots by a margin.  So
-    one exact count gives N = sqrt(count/1.2), and the union-slot scan in `tray_slots_all` does
-    count exactly: 30/30 on a live 5x5 board.
+    3x3 and 4x4 are not supported and are no longer guessed at.  They were measured and the
+    reasons are in docs/limits.md section 8 -- the engine shrinks the board to fit the tray
+    (a 3x3 board measures 531x399 against 560x425), so every calibrated constant is wrong, and a
+    3x3 run scored 1 of 9.  Rather than detect-and-fail, this reports "not the 5x5 deal" and the
+    caller stops before touching the mouse.
 
-    Width was the primary signal and it lied on a live 5x5: every piece carries a ~20 px drop
-    shadow (offset dx=+7, dy=+12), which inflates the median blob from 112 to 133, and
-    560/133 = 4.2 rounds to 4.  That is how a 5x5 board was announced as 4x4.
-
-    Width is kept as a fallback for a tray the slot scan cannot read, and as a cross-check: when
-    both measurements agree, the guess is as good as it gets.
+    The count is exact: the union-slot scan in `tray_slots_all` sees 30/30 on a live board.  Width
+    is only consulted when the tray cannot be counted at all, and then only to confirm 5.
     """
     dealt = count_tray_pieces(img)
     if dealt:
-        n = int(round(math.sqrt(dealt / 1.2)))
-        if 2 <= n <= 6 and abs(dealt - n * n * 1.2) <= 2.0:
-            return n, dealt
+        return (N_SIDE if abs(dealt - PIECES_DEALT) <= 2 else 0), dealt
     _ref, board, bands = layout(img)
     piece_w, _widths = piece_width_median(img, bands)
     if piece_w:
-        n = int(round(board.w / piece_w))
-        if 2 <= n <= 6:
-            return n, piece_w
-    return 5, 0
+        guess = int(round(board.w / piece_w))
+        if 2 <= guess <= 6:
+            return (N_SIDE if guess == N_SIDE else 0), int(piece_w)
+    # Nothing countable: refuse instead of assuming 5.  A real 5x5 tray always counts 30, so this
+    # only fires when the screen is not a 5x5 deal -- and stopping is cheap, while starting on the
+    # wrong geometry means dragging pieces around a board the constants do not fit.
+    return 0, 0
 
 
 def piece_width_median(img: np.ndarray, bands) -> tuple[float | None, list[int]]:

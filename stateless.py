@@ -430,8 +430,6 @@ def main() -> int:
     ap.add_argument("--passes", type=int, default=6,
                     help="how many times to walk the ring; a later pass may only offer pieces "
                          "and cells not already tried together, so it cannot spin forever")
-    ap.add_argument("--size", type=int, default=0,
-                    help="cells per side; 0 means read it from how many pieces were dealt")
     ap.add_argument("--wait", type=float, default=0.0,
                     help="seconds to wait before the foreground check, so you can click the "
                          "browser after pressing Enter in a terminal")
@@ -447,18 +445,16 @@ def main() -> int:
     mouse = Mouse()
     global N
     first = mouse.shot()
-    if args.size:
-        N = int(args.size)
-        print(f"grid: {N}x{N} (from --size)")
-    else:
-        detected, evidence = vision.detect_grid_size(first)
-        N = detected
-        held = vision.count_tray_pieces(first)
-        want = int(round(N * N * 1.2))
-        print(f"grid: {N}x{N} (tray holds {held} pieces; a {N}x{N} game deals {want})")
-        if held and abs(held - N * N * 1.2) > 1.5:
-            print(f"      !! {held} pieces does not fit {N}x{N} "
-                  f"(width hint {evidence:.0f}px) -- pass --size to override")
+    detected, held = vision.detect_grid_size(first)
+    if detected != 5:
+        # Only the 5x5 deal is played.  A 3x3 or 4x4 board is a different geometry (the engine
+        # shrinks it to fit the tray: 3x3 measures 531x399 against 560x425), so every calibrated
+        # constant would be wrong.  Say so and leave the mouse alone rather than fail halfway.
+        print(f"abort: the tray holds {held} pieces, which is not the 5x5 deal (30 pieces). "
+              f"This build plays 5x5 only.")
+        return 3
+    N = vision.N_SIDE
+    print(f"grid: {N}x{N} (tray holds {held} pieces, a 5x5 deal is {vision.PIECES_DEALT})")
     # A crash between mouseDown and mouseUp would leave the button held, and the next grab then
     # drags whatever the pointer is over -- pieces strewn about, a cell lost for the game.  The
     # live run did exactly that when pyautogui's fail-safe fired mid-drag.
