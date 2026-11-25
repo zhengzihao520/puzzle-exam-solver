@@ -757,21 +757,34 @@ def main() -> int:
                 satisfies, then the flat-side fit that applies to every class."""
                 return (wc.agreement(edges[pk], need) if need else 0, shape_fit(pk))
 
+            def compatible(cands: list[str]) -> list[str]:
+                """Drop candidates that contradict a known side of a white cell's requirement.
+
+                The deduction agrees with the engine on every known side measured so far (5 of 5
+                checked against the pieces that actually locked), so a piece with a flat where the
+                neighbour's tab demands a notch cannot fit and need not be dragged.  If the filter
+                would leave nothing the deduction itself must be off, so the unfiltered list is
+                kept -- a wrong deduction should cost ordering, never the cell.
+                """
+                if not need:
+                    return cands
+                strict = [k for k in cands if wc.consider(edges[k], need)]
+                return strict or cands
+
             order = ([plan[key]] if key in plan and plan[key] not in pieces.used else [])
             order = [k for k in order if tried.get((k, key), 0) < TRIES_ALLOWED]
             if not order:
                 # Later passes offer more of the same class.  A pure-white piece is the reason:
-                # five of them look identical by picture, so the engine's snap is what settles
-                # which one belongs where -- ordered first by the cuts the neighbours imply.
-                # Two candidates per pass was not enough to cover five white pieces before the
-                # passes ran out.  The white-piece rule below applies here too: `allow` keeps a
-                # doubtful reading's second class, so a white piece whose classifier hesitated can
-                # be listed as a photo class and end up on a photo cell -- where geometry may accept
-                # it and a white cell is left without its piece.
-                order = sorted((k for k in pieces.spare(wanted)
-                                if white_ok(k)
-                                and tried.get((k, key), 0) < TRIES_ALLOWED),
-                               key=fit, reverse=True)[:min(4, 2 + attempt)]
+                # five of them look identical by picture, so the cuts the neighbours imply decide
+                # which ones are even worth trying.  Two candidates per pass was not enough to
+                # cover five white pieces before the passes ran out.  The white-piece rule below
+                # applies here too: `allow` keeps a doubtful reading's second class, so a white
+                # piece whose classifier hesitated can be listed as a photo class and end up on a
+                # photo cell -- where geometry may accept it and a white cell is left without its
+                # piece.
+                cands = [k for k in pieces.spare(wanted)
+                         if white_ok(k) and tried.get((k, key), 0) < TRIES_ALLOWED]
+                order = sorted(compatible(cands), key=fit, reverse=True)[:min(4, 2 + attempt)]
             if not order:
                 # Last resort for a cell whose own piece the reader labelled as something else:
                 # offer *any* untried piece whose shape does not rule the cell out.  Bounded on
@@ -808,15 +821,15 @@ def main() -> int:
                 # trying the most plausible piece first.  The budget grows per pass for the same
                 # reason as above: a cell whose piece was misread only gets filled by trying.
                 room = 4 if late else min(4, 2 + attempt)
-                order = sorted(pool, key=fit, reverse=True)[:max(1, min(len(pool), room))]
+                order = sorted(compatible(pool), key=fit, reverse=True)[:max(1, min(len(pool), room))]
             # With only a couple of cells left, the rest of the tray joins the queue whatever class
             # the reader gave it.  The piece that still fits one of the last cells is sometimes the
             # one the reader labelled as another class, and while the same-class pool still has
             # entries the last-resort branch above never runs -- which is how runs kept ending on
             # 24 of 25 with two or three pieces in the tray that were never offered to that cell.
             if len(open_cells) - len(confirmed) <= 3:
-                spare = [k for k in pieces.spare()
-                         if k not in order and white_ok(k)]
+                spare = compatible([k for k in pieces.spare()
+                                    if k not in order and white_ok(k)])
                 spare.sort(key=fit, reverse=True)
                 order += spare[:max(0, 4 - len(order))]
             if not order:
