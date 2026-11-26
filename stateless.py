@@ -485,8 +485,6 @@ def main() -> int:
     name_blanks(pieces, snap.img, want=sum(1 for v in cells.values() if v == BLANK))
     print(f"  {len(pieces.tpl)} pieces, classes "
           f"{dict(Counter(pieces.cls.values()).most_common())}")
-    print(f"  {len(pieces.tpl)} pieces, classes "
-          f"{dict(Counter(pieces.cls.values()).most_common())}")
 
     need = Counter(v for v in cells.values())
     have = Counter(pieces.cls.values())
@@ -497,20 +495,22 @@ def main() -> int:
 
     edges: dict[str, dict] = {k: {s: None for s in SIDES} for k in pieces.tpl}
     # White pieces: their cuts are readable from their own silhouette, at no cost and without
-    # touching the mouse.  Until this was wired in, the loop had no information at all about which
-    # white piece belongs where, so it guessed -- and each wrong guess costs two moves, with one
-    # recorded run spending 22 refusals (44 moves) inside the white set alone.  These readings only
-    # order the candidates: the engine's snap still decides.
-    whites = [k for k in pieces.tpl if pieces.cls[k] == BLANK]
+    # touching the mouse.  These readings live in their own dict, deliberately: `edges` feeds the
+    # jigsaw rule solver, and a white piece only has a signature when the board actually contains
+    # white cells.  Putting them into `edges` once poisoned that solver in photo mode -- where the
+    # tray can hold white-background photos the classifier calls `blank` -- and its plan then
+    # overrode the picture plan, which is what made a plain 5x5 run take a hundred moves.
+    white_sig: dict[str, dict] = {}
+    white_cells = [k for k, v in cells.items() if v == BLANK]
+    whites = [k for k in pieces.tpl if pieces.cls[k] == BLANK] if white_cells else []
     if whites:
-        sig = {}
+        print(f"\nwhite pieces ({len(whites)}) with {len(white_cells)} white cell(s), "
+              f"cuts read from their own outline (no moves):")
         for k in whites:
-            edges[k] = we.read_white_edges(snap.img, pieces.box[k])
-            sig[k] = " ".join(f"{s[0]}:{edges[k][s] or '?'}" for s in SIDES)
-        print(f"\nwhite pieces, cuts read from their own outline (no moves): ")
-        for k in whites:
-            known = sum(1 for s in SIDES if edges[k][s])
-            print(f"  {k}: {sig[k]}   ({known}/4 sides readable)")
+            white_sig[k] = we.read_white_edges(snap.img, pieces.box[k])
+            known = sum(1 for s in SIDES if white_sig[k][s])
+            print(f"  {k}: " + " ".join(f"{s[0]}:{white_sig[k][s] or '?'}" for s in SIDES)
+                  + f"   ({known}/4 readable)")
     scores: dict[str, dict] = {}          # per side (tab, notch) evidence, for the flat call
     if args.edges and args.go:
         # White pieces are skipped.  All five carry the same pure-white picture, so any of them
@@ -717,14 +717,14 @@ def main() -> int:
             # white pieces by how many of those known sides they satisfy.  This is what turns "try
             # one and see" into "work it out": the engine snaps on geometry, so a piece that cannot
             # possibly fit (a flat where the neighbour's tab demands a notch) need never be dragged.
-            need: dict = {}
+            wneed: dict = {}
             if cells[key] == BLANK:
                 empty_now = {k for k in cells if k not in confirmed}
-                need = wc.required(snap.img, snap.cells, key, N, empty_now)
-                known = sum(1 for s in SIDES if need.get(s))
+                wneed = wc.required(snap.img, snap.cells, key, N, empty_now)
+                known = sum(1 for s in SIDES if wneed.get(s))
                 if known:
                     print(f"    cell({key}) white, {known}/4 side(s) known: "
-                          + " ".join(f"{s[0]}:{need[s] or '?'}" for s in SIDES))
+                          + " ".join(f"{s[0]}:{wneed[s] or '?'}" for s in SIDES))
 
             def white_ok(pk: str) -> bool:
                 return (not strict_white) or cells[key] == BLANK or pieces.cls[pk] != BLANK
@@ -755,7 +755,7 @@ def main() -> int:
             def fit(pk: str) -> tuple[int, int]:
                 """Ordering key: for a white cell, first how many of its known sides the piece
                 satisfies, then the flat-side fit that applies to every class."""
-                return (wc.agreement(edges[pk], need) if need else 0, shape_fit(pk))
+                return (wc.agreement(white_sig.get(pk, {}), wneed) if wneed else 0, shape_fit(pk))
 
             def compatible(cands: list[str]) -> list[str]:
                 """Drop candidates that contradict a known side of a white cell's requirement.
@@ -766,9 +766,9 @@ def main() -> int:
                 would leave nothing the deduction itself must be off, so the unfiltered list is
                 kept -- a wrong deduction should cost ordering, never the cell.
                 """
-                if not need:
+                if not wneed:
                     return cands
-                strict = [k for k in cands if wc.consider(edges[k], need)]
+                strict = [k for k in cands if wc.consider(white_sig.get(k, {}), wneed)]
                 return strict or cands
 
             order = ([plan[key]] if key in plan and plan[key] not in pieces.used else [])
