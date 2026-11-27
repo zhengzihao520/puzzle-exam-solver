@@ -753,7 +753,8 @@ def main() -> int:
                 was taken has to go somewhere, and refusing to move it only loses the cell."""
                 if late:
                     return True
-                return best_cell.get(pk, key) == key or plan.get(key) == pk
+                mine = best_cell.get(pk, key)
+                return mine == key or plan.get(key) == pk or mine in confirmed
 
             order = ([plan[key]] if key in plan and plan[key] not in pieces.used else [])
             order = [k for k in order if tried.get((k, key), 0) < TRIES_ALLOWED]
