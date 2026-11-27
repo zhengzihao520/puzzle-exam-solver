@@ -28,9 +28,17 @@ def _prep(img: np.ndarray, box, extra: int = 0) -> np.ndarray:
     the cell without changing the scale it is compared at.
     """
     x, y, w, h = box
-    crop = vision.sub(img, (x - extra, y - extra, w + 2 * extra, h + 2 * extra))
     tw = int(round(SIZE[0] * (1.0 + 2.0 * extra / w)))
     th = int(round(SIZE[1] * (1.0 + 2.0 * extra / h)))
+    if extra:
+        # Pad the *cell* by replicating its own edge rather than by reaching into the screenshot:
+        # panel tiles are ~90 px wide with ~4 px between them, so a 9 px pad was mostly the
+        # neighbouring tile's picture, and that noise is exactly what a wrong first attempt is made
+        # of (each one costs two moves).  Replication keeps the shift search without the neighbours.
+        crop = vision.sub(img, box)
+        crop = cv2.copyMakeBorder(crop, extra, extra, extra, extra, cv2.BORDER_REPLICATE)
+    else:
+        crop = vision.sub(img, box)
     # colour, not grey: the photos differ mainly in what they show, not in how bright they are
     return cv2.resize(crop, (tw, th), interpolation=cv2.INTER_AREA).astype(np.float32)
 
