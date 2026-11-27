@@ -758,18 +758,16 @@ def main() -> int:
                 return (wc.agreement(white_sig.get(pk, {}), wneed) if wneed else 0, shape_fit(pk))
 
             def compatible(cands: list[str]) -> list[str]:
-                """Drop candidates that contradict a known side of a white cell's requirement.
+                """Ordering only -- deliberately not a filter.
 
-                The deduction agrees with the engine on every known side measured so far (5 of 5
-                checked against the pieces that actually locked), so a piece with a flat where the
-                neighbour's tab demands a notch cannot fit and need not be dragged.  If the filter
-                would leave nothing the deduction itself must be off, so the unfiltered list is
-                kept -- a wrong deduction should cost ordering, never the cell.
+                Excluding white pieces that contradict a known side was tried and made things worse:
+                checked against the pieces that actually locked into each cell, the deduction agrees
+                on 10 of 12 known sides (83%), and at that accuracy the true piece gets excluded
+                often enough that a run burned 21 refusals instead of 9.  A wrong deduction may cost
+                ordering; it must never take a candidate away.  The score still decides the order in
+                `fit`, which is where the readings help.
                 """
-                if not wneed:
-                    return cands
-                strict = [k for k in cands if wc.consider(white_sig.get(k, {}), wneed)]
-                return strict or cands
+                return cands
 
             order = ([plan[key]] if key in plan and plan[key] not in pieces.used else [])
             order = [k for k in order if tried.get((k, key), 0) < TRIES_ALLOWED]
