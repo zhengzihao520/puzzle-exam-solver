@@ -798,13 +798,17 @@ def main() -> int:
                 # times" is not proof, and two recorded runs stopped at 24 of 25 with the piece
                 # that fits still in the tray because every pair had used up its allowance.
                 late = len(open_cells) - len(confirmed) <= 3
-                # A pure-white piece is only ever offered to a pure-white cell.  The engine snaps
-                # on geometry, not identity, so a white piece put on a photo cell can lock there --
-                # and then a white cell has nothing left that fits.  That is exactly how one run
-                # ended on 24 of 25 with a white cell empty and every white piece already placed:
-                # the last-resort pool had handed a white piece to a photo cell.
+                # White pieces and white cells are matched to each other and to nothing else.  The
+                # class of a white cell is the most reliable reading in the game (its panel tile is a
+                # plain white 255 tile, so there is nothing to misread), which makes a photo piece in
+                # a white cell -- and the reverse -- always wrong.  The engine snaps on geometry,
+                # not identity, so it would happily lock such a piece and then a white cell would be
+                # left with nothing that fits.  Measured: a run ended with two white cells empty and
+                # the log showing a white piece refused on a photo cell and a photo piece tried on a
+                # white one.
                 pool = [k for k in pieces.spare()
                         if white_ok(k)
+                        and (cells[key] != BLANK or pieces.cls[k] == BLANK)
                         and (late or tried.get((k, key), 0) < TRIES_ALLOWED)]
                 # Shape first, but never to the point of having nothing to offer: the reader
                 # misses flat sides far more often than it invents them, so demanding a flat
