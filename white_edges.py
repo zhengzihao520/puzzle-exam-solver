@@ -25,6 +25,13 @@ SIDES = ("top", "right", "bottom", "left")
 TAB_PX = 9        # the engine's tab is ~19 px; half of it is a safe "this is a cut" threshold
 FLAT_PX = 5
 PAD = 26          # wider than a tab (~19 px) so a protruding cut is never clipped
+# Brightness floor for the mask.  This started at 198, which was wrong in a way that looked like a
+# reader bug: the tabs sit in their own shadow and measure 100-190 grey, so a 198 floor cut them off
+# and the mask came out as the 112x85 core rectangle -- every side then read "flat", and a piece
+# with tabs all round looked like a plain tile.  Measured on a live tray: the core blob's bounding
+# box is 112x85 at 198, 132x136 at 110-80, and the tray background is 23-40, so 110 is far from it.
+WHITE_FLOOR = 110
+WHITE_SAT = 60
 
 
 def white_mask(img: np.ndarray, box, pad: int = PAD) -> np.ndarray:
@@ -32,7 +39,7 @@ def white_mask(img: np.ndarray, box, pad: int = PAD) -> np.ndarray:
     crop = vision.sub(img, (x - pad, y - pad, w + 2 * pad, h + 2 * pad))
     g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     sat = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)[:, :, 1]
-    m = ((g > 198) & (sat < 40)).astype(np.uint8)
+    m = ((g > WHITE_FLOOR) & (sat < WHITE_SAT)).astype(np.uint8)
     m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     # Keep only the blob the piece's centre is in.  The pad must be wider than a tab, while tray
     # slots are only ~18 px apart, so a neighbour's edge lands inside the crop; without this the
