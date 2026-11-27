@@ -663,9 +663,17 @@ def main() -> int:
     rule = {f"{r},{c}": k for (r, c), k in sol.assignment.items()}
     print(f"  rule solver: {len(rule)} cells, "
           f"{jigsaw.violations(cell_cls, jp, sol.assignment, n=N)} rule(s) broken")
-    if len(rule) > len(plan):
-        plan = rule
-    print(f"\nassignment: {len(plan)} cells")
+    # Picture first, rule solver only for the gaps.  The picture match is the strong signal (own cell
+    # wins 20 in 21, correlations 0.7-0.9) while the rule solver works from classes and cut edges;
+    # letting it *replace* the picture plan because it happened to cover one more cell threw the
+    # good assignments away and is what produced runs with 15-18 refusals.
+    if rule:
+        merged = dict(rule)
+        merged.update(plan)
+        plan = merged
+    print(f"\nassignment: {len(plan)} cells "
+          f"({sum(1 for k in plan if k in p_plan)} from the picture, "
+          f"{sum(1 for k in plan if k not in p_plan)} from the rule solver)")
     LOG.write_text(json.dumps({"cells": cells, "pieces": pieces.cls, "edges": edges,
                                "plan": plan}, indent=2), encoding="utf-8")
 
