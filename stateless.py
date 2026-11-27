@@ -34,6 +34,7 @@ import jigsaw
 import panel_match as pm
 import probe_edges as pe
 import vision
+import white_edges as we
 from identify import BLANK, Identifier
 from solve_live import Mouse, _enable_dpi, check_foreground, centre
 
@@ -494,6 +495,19 @@ def main() -> int:
               f"{'   SHORT' if have[c] < need[c] else ''}")
 
     edges: dict[str, dict] = {k: {s: None for s in SIDES} for k in pieces.tpl}
+    # White pieces: read their flat sides from their own outline (no moves).  These go in their own
+    # map, never in `edges` -- `edges` feeds the jigsaw rule solver, and a white piece has a
+    # signature only when this game actually contains white cells.  Putting them there once poisoned
+    # the solver in photo mode (white-background photos classified as blank), its plan overrode the
+    # picture plan, and a plain 5x5 run took a hundred moves.
+    white_flat: dict[str, dict] = {}
+    if any(v == BLANK for v in cells.values()):
+        for k in pieces.tpl:
+            if pieces.cls[k] == BLANK:
+                white_flat[k] = we.read_white_edges(snap.img, pieces.box[k])
+        known = sum(1 for v in white_flat.values() for s in SIDES if v.get(s) == "flat")
+        print(f"\nwhite pieces: {len(white_flat)} outlined, {known} flat side(s) readable "
+              f"(only used to order their candidates)")
     scores: dict[str, dict] = {}          # per side (tab, notch) evidence, for the flat call
     if args.edges and args.go:
         # White pieces are skipped.  All five carry the same pure-white picture, so any of them
@@ -714,8 +728,9 @@ def main() -> int:
                 the piece back.
                 """
                 score = 0
+                sig = white_flat.get(pk) or edges[pk]
                 for side in SIDES:
-                    if EDGE_SIGN[edges[pk].get(side)] != 0:
+                    if EDGE_SIGN[sig.get(side)] != 0:
                         continue
                     on_edge = {"top": r == 0, "bottom": r == N - 1,
                                "left": c == 0, "right": c == N - 1}[side]
