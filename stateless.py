@@ -605,8 +605,14 @@ def main() -> int:
     # Picture matching against the panel comes first: it identifies each piece's own cell, which is
     # what a person means by "look at the reference picture", and it costs no moves.  The read cuts
     # and the class readers are then only needed for whatever it could not place.
-    p_plan, p_conf, p_margin = pm.plan_and_margins(snap.img, pieces,
-                                                  {k: snap.panel[k] for k in open_cells})
+    scores = pm.scores(snap.img, pieces, {k: snap.panel[k] for k in open_cells})
+    p_plan, p_conf, p_margin = pm.plan_and_margins(scores, open_cells)
+    # Which cell each piece looks most like, independently of the one-to-one plan.  Offering a piece
+    # to a cell it does not own is exactly how a same-shaped cell steals it: the engine snaps on
+    # geometry, and once locked the piece cannot be lifted, so its own cell is left with nothing that
+    # fits.  That is how the last cell was lost in three recorded runs.  So each piece is offered
+    # only to its own best cell while the tray is still full.
+    best_cell = pm.best_cell(scores)
     if p_conf:
         confs = sorted(p_conf.values(), reverse=True)
         print(f"  panel plan: {len(p_plan)}/{len(open_cells)} cell(s) matched by picture, "
@@ -737,20 +743,30 @@ def main() -> int:
                     score += 1 if on_edge else -1
                 return score
 
+            late = len(open_cells) - len(confirmed) <= 3
+
+            def owns(pk: str) -> bool:
+                """Does this piece look most like *this* cell?  While the tray is full, only its own
+                piece goes in: a piece that fits elsewhere is how a same-shaped cell steals one, and
+                once the engine locks it the piece cannot be lifted, so the cell it belonged to can
+                never be filled.  Late in the run the rule relaxes -- by then a piece whose own cell
+                was taken has to go somewhere, and refusing to move it only loses the cell."""
+                if late:
+                    return True
+                return best_cell.get(pk, key) == key or plan.get(key) == pk
+
             order = ([plan[key]] if key in plan and plan[key] not in pieces.used else [])
             order = [k for k in order if tried.get((k, key), 0) < TRIES_ALLOWED]
             if not order:
                 # Later passes offer more of the same class.  A pure-white piece is the reason:
-                # five of them look identical (the panel cells for them are plain white tiles and
-                # the board draws nothing in an empty cell), so the only way to learn which white
-                # piece belongs where is to try one and let the engine refuse it.  Two candidates
-                # per pass was not enough to cover five white pieces before the passes ran out.
-                # The white-piece rule below applies here too: `allow` keeps a doubtful reading's
-                # second class, so a white piece whose classifier hesitated can be listed as a
-                # photo class and end up on a photo cell -- where geometry may accept it and a
-                # white cell is left without its piece.
+                # five of them look identical by picture, so only the engine's snap can settle
+                # which one belongs where.  Two candidates per pass was not enough to cover five
+                # white pieces before the passes ran out.  The white-piece rule below applies here
+                # too: `allow` keeps a doubtful reading's second class, so a white piece whose
+                # classifier hesitated can be listed as a photo class and end up on a photo cell --
+                # where geometry may accept it and a white cell is left without its piece.
                 order = sorted((k for k in pieces.spare(wanted)
-                                if white_ok(k)
+                                if white_ok(k) and owns(k)
                                 and tried.get((k, key), 0) < TRIES_ALLOWED),
                                key=shape_fit, reverse=True)[:min(4, 2 + attempt)]
             if not order:
