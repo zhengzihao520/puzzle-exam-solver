@@ -780,15 +780,20 @@ def main() -> int:
             late = len(open_cells) - len(confirmed) <= 3
 
             def owns(pk: str) -> bool:
-                """Does this piece look most like *this* cell?  While the tray is full, only its own
-                piece goes in: a piece that fits elsewhere is how a same-shaped cell steals one, and
-                once the engine locks it the piece cannot be lifted, so the cell it belonged to can
-                never be filled.  Late in the run the rule relaxes -- by then a piece whose own cell
-                was taken has to go somewhere, and refusing to move it only loses the cell."""
+                """Does this piece look most like *this* cell?
+
+                Two reasons, and the second one was a discovery: a piece dragged into a cell it does
+                not own is how a same-shaped cell steals it (the engine snaps on geometry, and once
+                locked the piece cannot be lifted).  And the exam deals more pieces than cells -- 30
+                for 25 -- so five of them have no cell at all.  Such a decoy's best cell is some real
+                cell, and once that cell is filled the decoy has nothing left to lose: it would be
+                offered everywhere and refused everywhere, two moves each time.  That is where the
+                remaining refusals in photo mode came from.  So the "its own cell is taken" escape is
+                gone: a decoy waits for the endgame like any other piece with no place to go.
+                """
                 if late or args.loose:
                     return True
-                mine = best_cell.get(pk, key)
-                return mine == key or plan.get(key) == pk or mine in confirmed
+                return best_cell.get(pk, key) == key or plan.get(key) == pk
 
             # Candidates in order of how much each piece looks like *this* cell.  The plan is just
             # the top of that list, so it is subsumed; what matters for 25 moves is that the first
