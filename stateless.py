@@ -646,6 +646,15 @@ def main() -> int:
         print(f"  {len(weak_set)} cell(s) where two pieces are too close to tell apart (filled last)")
     else:
         weak_set = set()
+    # Per-cell ranking straight from the score matrix.  This is the strongest signal available --
+    # the same picture appears in the panel and on the piece -- so candidates are tried in that
+    # order rather than by class.  A 25-move game means every first attempt has to be right, and
+    # with 96x72 matching the own cell wins 20 times in 21; classes cannot beat that, and their
+    # mistakes were what produced most of the refusals.
+    rank: dict[str, list[str]] = {}
+    for ck in open_cells:
+        pairs = sorted(((sc, pk) for (pk, c2), sc in scores.items() if c2 == ck), reverse=True)
+        rank[ck] = [pk for _sc, pk in pairs]
     plan = p_plan if p_plan else seam_plan(mouse, pieces, cell_cls, edges)
     jp = {k: jigsaw.Piece(k, pieces.cls[k],
                           {s: EDGE_SIGN[edges[k].get(s)] for s in SIDES})
@@ -781,16 +790,19 @@ def main() -> int:
                 mine = best_cell.get(pk, key)
                 return mine == key or plan.get(key) == pk or mine in confirmed
 
-            order = ([plan[key]] if key in plan and plan[key] not in pieces.used else [])
-            order = [k for k in order if tried.get((k, key), 0) < TRIES_ALLOWED]
+            # Candidates in order of how much each piece looks like *this* cell.  The plan is just
+            # the top of that list, so it is subsumed; what matters for 25 moves is that the first
+            # candidate is nearly always the piece's own cell (20 in 21 measured), and that a
+            # refusal is followed by the next-best *picture* rather than the next-best class.
+            order = [k for k in rank.get(key, [])
+                     if k not in pieces.used and white_ok(k) and owns(k)
+                     and tried.get((k, key), 0) < TRIES_ALLOWED][:min(3, 1 + attempt)]
+            if not order and plan.get(key) and plan[key] not in pieces.used:
+                order = [plan[key]]
             if not order:
-                # Later passes offer more of the same class.  A pure-white piece is the reason:
-                # five of them look identical by picture, so only the engine's snap can settle
-                # which one belongs where.  Two candidates per pass was not enough to cover five
-                # white pieces before the passes ran out.  The white-piece rule below applies here
-                # too: `allow` keeps a doubtful reading's second class, so a white piece whose
-                # classifier hesitated can be listed as a photo class and end up on a photo cell --
-                # where geometry may accept it and a white cell is left without its piece.
+                # Nothing in the ranking is left for this cell: fall back to the same class, which
+                # is what the white cells need (five identical-looking pieces are ranked arbitrarily
+                # by picture) and what a cell with a misread panel tile needs.
                 order = sorted((k for k in pieces.spare(wanted)
                                 if white_ok(k) and owns(k)
                                 and tried.get((k, key), 0) < TRIES_ALLOWED),
