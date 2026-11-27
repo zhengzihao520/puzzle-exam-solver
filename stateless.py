@@ -34,8 +34,6 @@ import jigsaw
 import panel_match as pm
 import probe_edges as pe
 import vision
-import white_cells as wc
-import white_edges as we
 from identify import BLANK, Identifier
 from solve_live import Mouse, _enable_dpi, check_foreground, centre
 
@@ -485,6 +483,8 @@ def main() -> int:
     name_blanks(pieces, snap.img, want=sum(1 for v in cells.values() if v == BLANK))
     print(f"  {len(pieces.tpl)} pieces, classes "
           f"{dict(Counter(pieces.cls.values()).most_common())}")
+    print(f"  {len(pieces.tpl)} pieces, classes "
+          f"{dict(Counter(pieces.cls.values()).most_common())}")
 
     need = Counter(v for v in cells.values())
     have = Counter(pieces.cls.values())
@@ -494,23 +494,6 @@ def main() -> int:
               f"{'   SHORT' if have[c] < need[c] else ''}")
 
     edges: dict[str, dict] = {k: {s: None for s in SIDES} for k in pieces.tpl}
-    # White pieces: their cuts are readable from their own silhouette, at no cost and without
-    # touching the mouse.  These readings live in their own dict, deliberately: `edges` feeds the
-    # jigsaw rule solver, and a white piece only has a signature when the board actually contains
-    # white cells.  Putting them into `edges` once poisoned that solver in photo mode -- where the
-    # tray can hold white-background photos the classifier calls `blank` -- and its plan then
-    # overrode the picture plan, which is what made a plain 5x5 run take a hundred moves.
-    white_sig: dict[str, dict] = {}
-    white_cells = [k for k, v in cells.items() if v == BLANK]
-    whites = [k for k in pieces.tpl if pieces.cls[k] == BLANK] if white_cells else []
-    if whites:
-        print(f"\nwhite pieces ({len(whites)}) with {len(white_cells)} white cell(s), "
-              f"cuts read from their own outline (no moves):")
-        for k in whites:
-            white_sig[k] = we.read_white_edges(snap.img, pieces.box[k])
-            known = sum(1 for s in SIDES if white_sig[k][s])
-            print(f"  {k}: " + " ".join(f"{s[0]}:{white_sig[k][s] or '?'}" for s in SIDES)
-                  + f"   ({known}/4 readable)")
     scores: dict[str, dict] = {}          # per side (tab, notch) evidence, for the flat call
     if args.edges and args.go:
         # White pieces are skipped.  All five carry the same pure-white picture, so any of them
@@ -713,19 +696,6 @@ def main() -> int:
             # holds while the tray is still full and relaxes in the last two passes.
             strict_white = attempt < args.passes - 2
 
-            # For a white cell, work out what it needs from the neighbours it can see, then sort the
-            # white pieces by how many of those known sides they satisfy.  This is what turns "try
-            # one and see" into "work it out": the engine snaps on geometry, so a piece that cannot
-            # possibly fit (a flat where the neighbour's tab demands a notch) need never be dragged.
-            wneed: dict = {}
-            if cells[key] == BLANK:
-                empty_now = {k for k in cells if k not in confirmed}
-                wneed = wc.required(snap.img, snap.cells, key, N, empty_now)
-                known = sum(1 for s in SIDES if wneed.get(s))
-                if known:
-                    print(f"    cell({key}) white, {known}/4 side(s) known: "
-                          + " ".join(f"{s[0]}:{wneed[s] or '?'}" for s in SIDES))
-
             def white_ok(pk: str) -> bool:
                 return (not strict_white) or cells[key] == BLANK or pieces.cls[pk] != BLANK
             # The planned piece first, then at most two others of the same class that have not
@@ -752,37 +722,22 @@ def main() -> int:
                     score += 1 if on_edge else -1
                 return score
 
-            def fit(pk: str) -> tuple[int, int]:
-                """Ordering key: for a white cell, first how many of its known sides the piece
-                satisfies, then the flat-side fit that applies to every class."""
-                return (wc.agreement(white_sig.get(pk, {}), wneed) if wneed else 0, shape_fit(pk))
-
-            def compatible(cands: list[str]) -> list[str]:
-                """Ordering only -- deliberately not a filter.
-
-                Excluding white pieces that contradict a known side was tried and made things worse:
-                checked against the pieces that actually locked into each cell, the deduction agrees
-                on 10 of 12 known sides (83%), and at that accuracy the true piece gets excluded
-                often enough that a run burned 21 refusals instead of 9.  A wrong deduction may cost
-                ordering; it must never take a candidate away.  The score still decides the order in
-                `fit`, which is where the readings help.
-                """
-                return cands
-
             order = ([plan[key]] if key in plan and plan[key] not in pieces.used else [])
             order = [k for k in order if tried.get((k, key), 0) < TRIES_ALLOWED]
             if not order:
                 # Later passes offer more of the same class.  A pure-white piece is the reason:
-                # five of them look identical by picture, so the cuts the neighbours imply decide
-                # which ones are even worth trying.  Two candidates per pass was not enough to
-                # cover five white pieces before the passes ran out.  The white-piece rule below
-                # applies here too: `allow` keeps a doubtful reading's second class, so a white
-                # piece whose classifier hesitated can be listed as a photo class and end up on a
-                # photo cell -- where geometry may accept it and a white cell is left without its
-                # piece.
-                cands = [k for k in pieces.spare(wanted)
-                         if white_ok(k) and tried.get((k, key), 0) < TRIES_ALLOWED]
-                order = sorted(compatible(cands), key=fit, reverse=True)[:min(4, 2 + attempt)]
+                # five of them look identical (the panel cells for them are plain white tiles and
+                # the board draws nothing in an empty cell), so the only way to learn which white
+                # piece belongs where is to try one and let the engine refuse it.  Two candidates
+                # per pass was not enough to cover five white pieces before the passes ran out.
+                # The white-piece rule below applies here too: `allow` keeps a doubtful reading's
+                # second class, so a white piece whose classifier hesitated can be listed as a
+                # photo class and end up on a photo cell -- where geometry may accept it and a
+                # white cell is left without its piece.
+                order = sorted((k for k in pieces.spare(wanted)
+                                if white_ok(k)
+                                and tried.get((k, key), 0) < TRIES_ALLOWED),
+                               key=shape_fit, reverse=True)[:min(4, 2 + attempt)]
             if not order:
                 # Last resort for a cell whose own piece the reader labelled as something else:
                 # offer *any* untried piece whose shape does not rule the cell out.  Bounded on
@@ -819,16 +774,16 @@ def main() -> int:
                 # trying the most plausible piece first.  The budget grows per pass for the same
                 # reason as above: a cell whose piece was misread only gets filled by trying.
                 room = 4 if late else min(4, 2 + attempt)
-                order = sorted(compatible(pool), key=fit, reverse=True)[:max(1, min(len(pool), room))]
+                order = sorted(pool, key=shape_fit, reverse=True)[:max(1, min(len(pool), room))]
             # With only a couple of cells left, the rest of the tray joins the queue whatever class
             # the reader gave it.  The piece that still fits one of the last cells is sometimes the
             # one the reader labelled as another class, and while the same-class pool still has
             # entries the last-resort branch above never runs -- which is how runs kept ending on
             # 24 of 25 with two or three pieces in the tray that were never offered to that cell.
             if len(open_cells) - len(confirmed) <= 3:
-                spare = compatible([k for k in pieces.spare()
-                                    if k not in order and white_ok(k)])
-                spare.sort(key=fit, reverse=True)
+                spare = [k for k in pieces.spare()
+                         if k not in order and white_ok(k)]
+                spare.sort(key=shape_fit, reverse=True)
                 order += spare[:max(0, 4 - len(order))]
             if not order:
                 print(f"    cell({key}) {wanted}: nothing left to try -- cell left empty")
