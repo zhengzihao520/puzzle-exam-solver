@@ -431,6 +431,9 @@ def main() -> int:
     ap.add_argument("--passes", type=int, default=6,
                     help="how many times to walk the ring; a later pass may only offer pieces "
                          "and cells not already tried together, so it cannot spin forever")
+    ap.add_argument("--loose", action="store_true",
+                    help="offer pieces to any cell, not only the one they look most like: more "
+                         "moves, but a cell whose piece was misread gets rescued earlier")
     ap.add_argument("--wait", type=float, default=0.0,
                     help="seconds to wait before the foreground check, so you can click the "
                          "browser after pressing Enter in a terminal")
@@ -751,7 +754,7 @@ def main() -> int:
                 once the engine locks it the piece cannot be lifted, so the cell it belonged to can
                 never be filled.  Late in the run the rule relaxes -- by then a piece whose own cell
                 was taken has to go somewhere, and refusing to move it only loses the cell."""
-                if late:
+                if late or args.loose:
                     return True
                 mine = best_cell.get(pk, key)
                 return mine == key or plan.get(key) == pk or mine in confirmed
