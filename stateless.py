@@ -44,6 +44,7 @@ LOG = vision.ROOT / "logs" / "stateless.json"
 CUTLOG = vision.ROOT / "logs" / "cuts.jsonl"
 EDGE_SIGN = {"tab": 1, "notch": -1, "flat": 0, None: None}
 SIDES = ("top", "right", "bottom", "left")
+PRESSES = 3          # press points for the "is it locked?" probe; see press_is_locked
 
 
 def ring_order(n: int) -> list[tuple[int, int]]:
@@ -223,7 +224,26 @@ def name_blanks(pieces: "Pieces", img: np.ndarray, want: int,
         marked += 1
     if marked:
         print(f"  {marked} piece(s) named {BLANK} by whiteness rank (panel wants {want})")
-    return marked
+    # And the other way round, which was the real confusion: a photo with a white background wins
+    # the `blank` class by default, but it is not one of the k whitest, so it must not stay blank.
+    # Left alone it sat in the blank class all game, was offered to white cells, and every such offer
+    # cost two moves.  Demote it to its own runner-up reading when there is one, and otherwise mark
+    # it as "could be anything" so `repair_classes` can place it by budget.
+    demoted = 0
+    for frac, k in ranked[want:]:
+        if pieces.cls[k] != BLANK:
+            continue
+        others = [c for c in (pieces.allow.get(k) or frozenset()) if c != BLANK]
+        if others:
+            pieces.cls[k] = sorted(others)[0]
+            pieces.allow[k] = frozenset(pieces.cls[k])
+        else:
+            pieces.allow[k] = None          # wildcard: repair_classes decides
+        demoted += 1
+    if demoted:
+        print(f"  {demoted} piece(s) demoted out of {BLANK}: too dark to be one of the "
+              f"{want} the panel asks for")
+    return marked + demoted
 
 
 def seam_plan(mouse: Mouse, pieces: "Pieces", cell_cls: dict, edges: dict,
@@ -379,13 +399,15 @@ def seam_plan(mouse: Mouse, pieces: "Pieces", cell_cls: dict, edges: dict,
     return {f"{r},{c}": kept[i] for (r, c), i in got.items()}
 
 
-def press_is_locked(mouse: Mouse, box, presses: int = 5) -> bool:
+def press_is_locked(mouse: Mouse, box, presses: int = PRESSES) -> bool:
     """Can the engine lift what is in this box?
 
-    Five press points, not one.  A single press that lands on nothing changes nothing either,
-    and reading that as "locked" is exactly how an earlier version reported 17 placed cells
-    when the game said 10.  A locked box costs no move (the engine returns before counting),
-    so the extra presses are free.
+    Several press points, not one.  A single press that lands on nothing changes nothing either,
+    and reading that as "locked" is exactly how an earlier version reported 17 placed cells when
+    the game said 10.  A locked box costs no move (the engine returns before counting), so the
+    extra presses are free in move terms -- but not in time: each press is a grab, a drag, two
+    screenshots and two put-backs, about 1.3 s, and this runs twice per placement.  PRESSES is 3
+    rather than 5 for that reason; 5 cost ~2.6 s per verification and bought nothing measurable.
 
     Two things this now does that it did not, both of which made a refused drop look locked:
 
