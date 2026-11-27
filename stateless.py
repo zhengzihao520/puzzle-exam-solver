@@ -638,6 +638,24 @@ def main() -> int:
     # fits.  That is how the last cell was lost in three recorded runs.  So each piece is offered
     # only to its own best cell while the tray is still full.
     best_cell = pm.best_cell(scores)
+    # The class of a piece can also be read off the picture match: the cell it looks most like is
+    # (measured) its own cell 20 times in 21, and that cell's class comes from the panel, not from a
+    # 96x72 crop.  Where the match is strong this beats the classifier outright -- the recorded
+    # misreads were exactly of this kind ("class chair: 1 piece short", "elephant -> chair").  Below
+    # the threshold nothing is overridden: a weak match says nothing about the piece.
+    strong = 0.75
+    fixed = []
+    for pk, ck in best_cell.items():
+        sc = scores.get((pk, ck), -1.0)
+        want = cells.get(ck)
+        if sc >= strong and want and pieces.cls.get(pk) != want:
+            fixed.append((pk, pieces.cls.get(pk), want, sc))
+            pieces.cls[pk] = want
+            pieces.allow[pk] = frozenset([want])
+    if fixed:
+        print(f"  {len(fixed)} piece class(es) taken from the picture match, not the classifier:")
+        for pk, was, now, sc in fixed[:8]:
+            print(f"    {pk}: {was} -> {now}  (match {sc:.2f})")
     if p_conf:
         confs = sorted(p_conf.values(), reverse=True)
         print(f"  panel plan: {len(p_plan)}/{len(open_cells)} cell(s) matched by picture, "
