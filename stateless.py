@@ -769,7 +769,14 @@ def main() -> int:
                                 if white_ok(k) and owns(k)
                                 and tried.get((k, key), 0) < TRIES_ALLOWED),
                                key=shape_fit, reverse=True)[:min(4, 2 + attempt)]
-            if not order:
+            if not order and late:
+                # Last resort, and *only* in the endgame: for a cell whose own piece the reader
+                # labelled as something else, offer any untried piece whose shape does not rule the
+                # cell out.  Measured on a live Part 3 board, 17 of 23 refusals were cross-class
+                # offers of exactly this kind (elephant into a chair cell, suitcase into a tafei cell)
+                # -- pure waste while the tray still holds the right class, because those pieces
+                # cannot fit.  Deferring them to the endgame keeps the rescue for the cells that
+                # really were misread, and stops paying two moves for it on every pass.
                 # Last resort for a cell whose own piece the reader labelled as something else:
                 # offer *any* untried piece whose shape does not rule the cell out.  Bounded on
                 # purpose -- two per cell per pass -- and the refused pairs live on disk, so the
