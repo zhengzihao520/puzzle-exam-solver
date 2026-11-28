@@ -556,6 +556,10 @@ def main() -> int:
     ap.add_argument("--no-white-shapes", dest="white_shapes", action="store_false",
                     help="do not use the white-cell shape reader; it is only reached on a board "
                          "that has white cells, and switching it off leaves the older behaviour")
+    ap.add_argument("--wait-deal", type=float, default=0.0, metavar="SECONDS",
+                    help="start the game yourself; wait up to this long for a fresh 5x5 deal to "
+                         "appear before giving up.  Removes every click on the setup screen, which "
+                         "was the fragile part of a run")
     ap.add_argument("--wait", type=float, default=0.0,
                     help="seconds to wait before the foreground check, so you can click the "
                          "browser after pressing Enter in a terminal")
@@ -575,6 +579,24 @@ def main() -> int:
     global N
     first = mouse.shot()
     detected, held = vision.detect_grid_size(first)
+    if detected != 5 and args.wait_deal > 0:
+        # You start the game; this waits for it.  Clicking through the setup screen was fragile for
+        # reasons that had nothing to do with the puzzle (a press dropped while the page is still
+        # painting, a results modal over the buttons), so the deal is the user's job and the
+        # program's job is to notice it and take over.
+        waited = 0.0
+        print(f"waiting up to {args.wait_deal:g}s for a fresh 5x5 deal -- start the game yourself; "
+              f"the tray currently holds {held} piece(s)", flush=True)
+        while waited < args.wait_deal:
+            time.sleep(2.0)
+            waited += 2.0
+            first = mouse.shot()
+            detected, held = vision.detect_grid_size(first)
+            if detected == 5:
+                print(f"  deal seen after {waited:g}s: tray holds {held} pieces", flush=True)
+                break
+            if int(waited) % 10 == 0:
+                print(f"  {waited:g}s: tray holds {held} piece(s), still waiting", flush=True)
     if detected != 5:
         # Only the 5x5 deal is played.  A 3x3 or 4x4 board is a different geometry (the engine
         # shrinks it to fit the tray: 3x3 measures 531x399 against 560x425), so every calibrated
