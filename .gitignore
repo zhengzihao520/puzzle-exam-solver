@@ -37,3 +37,6 @@ runs/cls_real/weights/best.pt
 
 # white-cell capture frames (debug flag --white-frames)
 runs/white/
+
+# 讲解/注释副本（本地学习用，不入库）
+docs/study/
