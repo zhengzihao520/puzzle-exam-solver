@@ -180,6 +180,57 @@ class Pieces:
                 (self.allow[k] is None or cls in self.allow[k])]
 
 
+WHITE_SIDES_NEIGHBOUR = {"top": (-1, 0), "bottom": (1, 0), "left": (0, -1), "right": (0, 1)}
+
+
+def white_candidates(snap: Snap, pieces: Pieces, key: str, verbose: bool = False) -> list[str]:
+    """Order the white pieces by how well each one's outline fits *this* hole.
+
+    A white cell carries no picture -- all five white pieces are the same white tile -- so the only
+    evidence is the shape of the cut, and the missing piece's shape is drawn on the board: an empty
+    cell is the one dark blob, and its outline *is* the shape of the piece that belongs there on
+    every side whose neighbour is already placed.  Filling outside in means all four sides by the
+    time a white cell is reached.
+
+    Measured on a recorded Part 3 game that itself finished 25/25: across the 16 offers to white
+    cells, the piece the engine accepted ranked first 13 times out of 13 where the cell's answer was
+    known -- with every one of four scorers tried (`tools/hole_test.py` keeps the reader honest
+    against board geometry, `--white-frames` produces the labelled frames).
+
+    Returns pieces ordered best-first; contradictions on a readable side (a tab where the hole has a
+    notch, or a tab on a side the board forces flat) are dropped to the back rather than discarded,
+    because the reader is not perfect and a refusal costs two moves either way.
+    """
+    r, c = (int(v) for v in key.split(","))
+    placed = {k for k in snap.cells if snap.cell_has_piece(k)}
+    sides = {s for s, (dr, dc) in WHITE_SIDES_NEIGHBOUR.items() if f"{r + dr},{c + dc}" in placed}
+    sides |= {s for s, on in (("top", r == 0), ("bottom", r == N - 1),
+                              ("left", c == 0), ("right", c == N - 1)) if on}
+    if not sides:
+        return []
+    hole = we.profiles_of(snap.img, snap.cells[key], hole=True, mode="drop")
+    hole_lab = we.read_hole_edges(snap.img, snap.cells[key], mode="drop")
+    if not hole:
+        return []
+    rows: list[tuple[int, float, str]] = []
+    for pk in pieces.spare():
+        if whiteness(vision.sub(snap.img, pieces.box[pk])) < 0.9:
+            continue                                  # a photo piece never belongs in a white cell
+        prof = we.profiles_of(snap.img, pieces.box[pk], hole=False)
+        if not prof:
+            continue
+        lab = we.read_white_edges(snap.img, pieces.box[pk])
+        bad = sum(1 for s in sides
+                  if hole_lab.get(s) and lab.get(s) and hole_lab[s] != lab[s])
+        dist = sum((hole[s][0] - prof[s][0]) ** 2 + (hole[s][1] - prof[s][1]) ** 2
+                   for s in sides & set(hole) & set(prof))
+        rows.append((bad, dist, pk))
+    rows.sort()
+    if verbose and rows:
+        print("    white shapes: " + "  ".join(f"{pk} bad{b} d{d:.0f}" for b, d, pk in rows))
+    return [pk for _b, _d, pk in rows]
+
+
 def whiteness(crop: np.ndarray) -> float:
     """Fraction of a piece's middle half that is near-white and unsaturated.
 
@@ -502,6 +553,9 @@ def main() -> int:
                     help="only credit a cell if the piece has visibly left its tray slot; off by "
                          "default because the runs with it have had more refusals, and the reason "
                          "has not been measured yet")
+    ap.add_argument("--no-white-shapes", dest="white_shapes", action="store_false",
+                    help="do not use the white-cell shape reader; it is only reached on a board "
+                         "that has white cells, and switching it off leaves the older behaviour")
     ap.add_argument("--wait", type=float, default=0.0,
                     help="seconds to wait before the foreground check, so you can click the "
                          "browser after pressing Enter in a terminal")
@@ -868,6 +922,12 @@ def main() -> int:
             # piece spends two moves finding out.  Ranking still supplies the second and third
             # candidates, which is what a refusal falls back to -- the next-best *picture*, not
             # the next-best class.
+            # A white cell gets its answer from the shape it needs, not from a picture it does not have.
+            # Computed before the other branches and applied after them, so it wins where it has
+            # something to say and changes nothing where it does not.  Only a board that actually
+            # contains white cells ever reaches this code.
+            white_lead = (white_candidates(snap, pieces, key, verbose=attempt == 0)
+                          if args.white_shapes and cells[key] == BLANK else [])
             ranked = [(tried.get((k, key), 0), k) for k in rank.get(key, [])
                       if k not in pieces.used and white_ok(k) and owns(k)
                       and tried.get((k, key), 0) < TRIES_ALLOWED]
@@ -958,6 +1018,14 @@ def main() -> int:
                          if k not in order and white_ok(k)]
                 spare.sort(key=lambda k: (tried.get((k, key), 0), -shape_fit(k)))
                 order += spare[:max(0, 4 - len(order))]
+            if white_lead:
+                # The shape's answer, applied last so it wins whenever it has one: one offer per
+                # pass, best first, and a refusal simply moves to the next shape (the tried count
+                # retires it for this cell).
+                shaped = [k for k in white_lead
+                          if k not in pieces.used and tried.get((k, key), 0) < TRIES_ALLOWED]
+                if shaped:
+                    order = shaped[:1]
             if not order:
                 print(f"    cell({key}) {wanted}: nothing left to try -- cell left empty")
                 continue
