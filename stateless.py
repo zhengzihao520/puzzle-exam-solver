@@ -852,10 +852,20 @@ def main() -> int:
             # sort is stable, so within a refusal count the picture order still decides.
             ranked.sort(key=lambda t: t[0])
             first = p_plan.get(key)
+            if cells[key] == BLANK:
+                # Picture similarity says nothing between five pure-white pieces -- they are the
+                # same photograph -- so for a white cell the only usable evidence is which way the
+                # piece's flat sides face.  Measured on a live board: a white piece locked into a
+                # boundary cell with its flat side to the edge in 7 of 8 boundary faces.
+                ranked.sort(key=lambda t: (t[0], -shape_fit(t[1])))
             if first and tried.get((first, key), 0) == 0:
                 ranked.sort(key=lambda t: 0 if t[1] == first else 1)
             order = [k for _n, k in ranked][:min(3, 1 + attempt)]
-            if not order and plan.get(key) and plan[key] not in pieces.used:
+            if not order and plan.get(key) and plan[key] not in pieces.used \
+                    and tried.get((plan[key], key), 0) < TRIES_ALLOWED:
+                # The plan's piece, but only while it has not been refused too often.  Without the
+                # cap this branch re-offered the same pair on every pass: one Part 3 game offered
+                # a dog to an elephant cell five times, and four cells stayed empty to the end.
                 order = [plan[key]]
             if not order:
                 # Nothing in the ranking is left for this cell: fall back to the same class, which
