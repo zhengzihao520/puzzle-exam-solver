@@ -899,20 +899,18 @@ def main() -> int:
                             return False
                     return True
 
-                # With only a few cells left, every unused piece is fair game and the per-pair
-                # refusal count stops applying: a lock probe misses often (an audit of a finished
-                # board counted 1-3 fewer cells than the loop had confirmed), so "refused three
-                # times" is not proof, and two recorded runs stopped at 24 of 25 with the piece
-                # that fits still in the tray because every pair had used up its allowance.
+                # This is the *last* branch -- every earlier one is empty -- so it stops applying
+                # the refusal cap.  The cap exists to stop the loop repeating a bet while an
+                # untried candidate is available; once nothing is left, it only produces "nothing
+                # left to try" on a cell with pieces still in the tray, which is how two recorded
+                # Part 3 runs ended at 20 of 25 and 23 of 25.  Ordering by how often each piece
+                # has already been refused here keeps the least-repeated bet first.
                 late = len(open_cells) - len(confirmed) <= 3
-                # A pure-white piece is only ever offered to a pure-white cell.  The engine snaps
-                # on geometry, not identity, so a white piece put on a photo cell can lock there --
-                # and then a white cell has nothing left that fits.  That is exactly how one run
-                # ended on 24 of 25 with a white cell empty and every white piece already placed:
-                # the last-resort pool had handed a white piece to a photo cell.
-                pool = [k for k in pieces.spare()
-                        if white_ok(k)
-                        and (late or tried.get((k, key), 0) < TRIES_ALLOWED)]
+                # A pure-white piece is only ever offered to a pure-white cell while the tray is
+                # full.  The engine snaps on geometry, not identity, so a white piece put on a
+                # photo cell can lock there and starve a white cell: that is exactly how one run
+                # ended on 24 of 25 with every white piece already placed.
+                pool = [k for k in pieces.spare() if white_ok(k)]
                 # Shape first, but never to the point of having nothing to offer: the reader
                 # misses flat sides far more often than it invents them, so demanding a flat
                 # bottom on a bottom-row cell once excluded every candidate and the cell was
