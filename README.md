@@ -19,6 +19,7 @@
 | 训练脚本 | `tools/fetch_catalog.py` → `tools/build_dataset.py` → `tools/train_yolo.py` |
 | 怎么跑 | 第 8 节（双击 `run.bat` / `dry.bat`） |
 | 实现说明与实测数字 | 第 1–7 节、第 9 节；边界情况见 `docs/limits.md` |
+| **讲解提纲（照着讲）** | `docs/talk.md`：数据流、三个判据、验收方式、关键数字、三处真 bug、现场演示脚本、十来个追问的答案 |
 | 环境 | `requirements.txt` |
 
 ---
