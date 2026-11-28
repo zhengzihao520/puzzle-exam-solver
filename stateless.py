@@ -81,7 +81,11 @@ class Snap:
         return vision.has_piece(vision.sub(self.img, self.cells[key]), 30)
 
     def slot_has_piece(self, box) -> bool:
-        return vision.has_piece(vision.sub(self.img, box), 20)
+        # The same test `count_tray_pieces` uses, on purpose.  Two tests with two thresholds
+        # disagreed on exactly one slot: a piece dark enough to sit under a mean-20 floor was
+        # counted by the tray count and skipped by the inventory, so it never became a candidate
+        # for its own cell.  One measure, one answer -- and the count is what the 5x5 check trusts.
+        return not vision.is_empty(vision.sub(self.img, box))
 
 
 def locate(snap: Snap, tpl) -> tuple[tuple | None, float]:
@@ -109,6 +113,28 @@ def locate(snap: Snap, tpl) -> tuple[tuple | None, float]:
     return None, max(best_sc, coarse)
 
 
+def locate_piece(snap: Snap, pieces: "Pieces", pk: str) -> tuple[tuple | None, float]:
+    """Where this piece is now, falling back to the slot the inventory recorded.
+
+    The fallback exists for pieces the fingerprint cannot answer for: `template` refuses a flat
+    patch, so a near-black piece comes back with tpl=None and `locate` could never find it -- it
+    was in the tray, visible to the eye, and unusable.  The recorded slot is offered only when the
+    piece still answers for itself there (or when there is no fingerprint to ask), so a slot that
+    another piece has since taken cannot send the drag to the wrong piece.
+    """
+    box, sc = locate(snap, pieces.tpl[pk])
+    if box is not None:
+        return box, sc
+    known = pieces.box.get(pk)
+    if known is None:
+        return None, sc
+    if pieces.tpl[pk] is None:
+        return (known, sc) if snap.slot_has_piece(known) else (None, sc)
+    if fp.score_at(snap.img, pieces.tpl[pk], known) >= fp.GOOD:
+        return known, sc
+    return None, sc
+
+
 class Pieces:
     """Who each piece is; where it is comes from the latest snapshot."""
 
@@ -125,8 +151,12 @@ class Pieces:
                 continue
             key = f"s{i:02d}"
             tpl = fp.template(snap.img, box)
-            if tpl is None:
-                continue
+            # Registered even when the thumbnail comes back flat.  `template` refuses a patch
+            # whose mean channel std is under 1.0, and the darkest piece on a real tray is nearly
+            # black (a black suitcase, a night shot): skipping it here made the piece invisible
+            # for the whole game -- never a candidate for its own cell, which then could not be
+            # filled at all.  With tpl=None it is still matched by the panel picture (which never
+            # touches the fingerprint) and it is dragged from the slot recorded here.
             res = idf.identify(vision.sub(snap.img, box))
             self.tpl[key] = tpl
             self.box[key] = box
@@ -138,7 +168,8 @@ class Pieces:
             self.allow[key] = (frozenset([res.label, *res.alternatives])
                                if not res.confident else frozenset([res.label]))
             if verbose:
-                print(f"  {key} at ({box[0]},{box[1]})  {res}")
+                blind = "" if tpl is not None else "   [no fingerprint: flat patch]"
+                print(f"  {key} at ({box[0]},{box[1]})  {res}{blind}")
 
     def spare(self, cls: str | None = None) -> list[str]:
         """Spare pieces that could be `cls` -- a doubtful piece counts for either reading."""
@@ -803,23 +834,39 @@ def main() -> int:
                     return True
                 return best_cell.get(pk, key) == key or plan.get(key) == pk
 
-            # Candidates in order of how much each piece looks like *this* cell.  The plan is just
-            # the top of that list, so it is subsumed; what matters for 25 moves is that the first
-            # candidate is nearly always the piece's own cell (20 in 21 measured), and that a
-            # refusal is followed by the next-best *picture* rather than the next-best class.
-            order = [k for k in rank.get(key, [])
-                     if k not in pieces.used and white_ok(k) and owns(k)
-                     and tried.get((k, key), 0) < TRIES_ALLOWED][:min(3, 1 + attempt)]
+            # Candidates in order of how much each piece looks like *this* cell, with the
+            # one-to-one plan's own choice moved to the front.  The plan is the *optimal*
+            # assignment of pieces to cells (panel_match.plan_and_margins), and it differs from
+            # the per-cell ranking exactly where it matters: when two pieces both look most like
+            # one cell, the bare ranking sends both of them there and the cell that loses the
+            # piece spends two moves finding out.  Ranking still supplies the second and third
+            # candidates, which is what a refusal falls back to -- the next-best *picture*, not
+            # the next-best class.
+            ranked = [(tried.get((k, key), 0), k) for k in rank.get(key, [])
+                      if k not in pieces.used and white_ok(k) and owns(k)
+                      and tried.get((k, key), 0) < TRIES_ALLOWED]
+            # Untried first, and this is the whole point: a pair the engine has already refused is
+            # the last thing to offer again, not the first.  The picture ranking is fixed, so it
+            # put the same piece first on every pass -- in one recorded game two pairs were offered
+            # three times each, which is twelve of that game's moves spent re-making one bet.  The
+            # sort is stable, so within a refusal count the picture order still decides.
+            ranked.sort(key=lambda t: t[0])
+            first = p_plan.get(key)
+            if first and tried.get((first, key), 0) == 0:
+                ranked.sort(key=lambda t: 0 if t[1] == first else 1)
+            order = [k for _n, k in ranked][:min(3, 1 + attempt)]
             if not order and plan.get(key) and plan[key] not in pieces.used:
                 order = [plan[key]]
             if not order:
                 # Nothing in the ranking is left for this cell: fall back to the same class, which
                 # is what the white cells need (five identical-looking pieces are ranked arbitrarily
-                # by picture) and what a cell with a misread panel tile needs.
+                # by picture) and what a cell with a misread panel tile needs.  Untried first here
+                # too, then the better shape fit.
                 order = sorted((k for k in pieces.spare(wanted)
                                 if white_ok(k) and owns(k)
                                 and tried.get((k, key), 0) < TRIES_ALLOWED),
-                               key=shape_fit, reverse=True)[:min(4, 2 + attempt)]
+                               key=lambda k: (tried.get((k, key), 0), -shape_fit(k))
+                               )[:min(4, 2 + attempt)]
             if not order and late:
                 # Last resort, and *only* in the endgame: for a cell whose own piece the reader
                 # labelled as something else, offer any untried piece whose shape does not rule the
@@ -863,7 +910,10 @@ def main() -> int:
                 # trying the most plausible piece first.  The budget grows per pass for the same
                 # reason as above: a cell whose piece was misread only gets filled by trying.
                 room = 4 if late else min(4, 2 + attempt)
-                order = sorted(pool, key=shape_fit, reverse=True)[:max(1, min(len(pool), room))]
+                # Untried first here as well: in the endgame the same pair was being re-offered
+                # while other pieces of a plausible shape had never been tried at all.
+                order = sorted(pool, key=lambda k: (tried.get((k, key), 0), -shape_fit(k))
+                               )[:max(1, min(len(pool), room))]
             # With only a couple of cells left, the rest of the tray joins the queue whatever class
             # the reader gave it.  The piece that still fits one of the last cells is sometimes the
             # one the reader labelled as another class, and while the same-class pool still has
@@ -872,7 +922,7 @@ def main() -> int:
             if len(open_cells) - len(confirmed) <= 3:
                 spare = [k for k in pieces.spare()
                          if k not in order and white_ok(k)]
-                spare.sort(key=shape_fit, reverse=True)
+                spare.sort(key=lambda k: (tried.get((k, key), 0), -shape_fit(k)))
                 order += spare[:max(0, 4 - len(order))]
             if not order:
                 print(f"    cell({key}) {wanted}: nothing left to try -- cell left empty")
@@ -882,7 +932,7 @@ def main() -> int:
                 tries += 1
                 if moves >= args.max_moves:
                     break
-                box, sc = locate(snap, pieces.tpl[pk])
+                box, sc = locate_piece(snap, pieces, pk)
                 if box is None:
                     # Do NOT retire the piece.  Not finding it is a failure of the search, or of
                     # where it was last set down -- not proof that it left the game.  Retiring it
@@ -895,7 +945,11 @@ def main() -> int:
                 mouse.grab_at((sx, sy))
                 mouse.glide((sx + 96, sy + 74))
                 time.sleep(0.14)
-                if fp.score_at(mouse.shot(), pieces.tpl[pk], box) > 0.8:
+                # A piece with no fingerprint (a flat, near-black patch) cannot be asked whether
+                # it came away, so it is not asked -- `score_at` would answer 0.00 for a piece
+                # that never moved, and the drag would then put it down somewhere it is not.
+                if pieces.tpl[pk] is not None and \
+                        fp.score_at(mouse.shot(), pieces.tpl[pk], box) > 0.8:
                     mouse.release()
                     print(f"    {pk}: did not come away from ({box[0]},{box[1]})")
                     continue
@@ -951,7 +1005,9 @@ def main() -> int:
                 moves += 1
                 time.sleep(0.18)
                 back = Snap(mouse.shot())
-                if not fp.score_at(back.img, pieces.tpl[pk], box) > 0.8:
+                if pieces.tpl[pk] is None:
+                    print(f"      -> taken back to its own slot at ({sx},{sy})  [move {moves}]")
+                elif not fp.score_at(back.img, pieces.tpl[pk], box) > 0.8:
                     print(f"      -> taken back to ({sx},{sy}), but it is not there any more")
                 else:
                     print(f"      -> taken back to its own slot at ({sx},{sy})  [move {moves}]")

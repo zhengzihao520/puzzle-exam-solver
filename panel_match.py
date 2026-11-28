@@ -69,30 +69,95 @@ def scores(img: np.ndarray, pieces, cells: dict[str, tuple]) -> dict[tuple[str, 
     return out
 
 
+def _assign_max(rows: list[str], cols: list[str],
+                w: dict[tuple[str, str], float]) -> dict[str, str]:
+    """Optimal one-to-one assignment {col: row} maximising the total weight.
+
+    Greedy-on-the-strongest-pair was here first, on the argument that the own cell wins 20 times
+    in 21 so the ranking is sharp.  What greedy cannot do is the one thing that matters for a
+    25-move game: when two pieces both look most like the same cell, greedy takes the stronger of
+    them and the other cell is left to a second-best candidate it never checked against the
+    others.  The assignment is solved exactly instead (Kahn-Munkres, 30x25 costs microseconds),
+    which is verified against brute force in tools/assign_test.py.
+    """
+    n, m = len(rows), len(cols)
+    if not n or not m:
+        return {}
+    flip = n > m                       # the solver wants rows <= cols
+    r_list, c_list = (cols, rows) if flip else (rows, cols)
+    cost = [[-w.get((r, c), 0.0) if not flip else -w.get((c, r), 0.0)
+             for c in c_list] for r in r_list]
+    best = _kahn_munkres(cost)
+    out: dict[str, str] = {}
+    for i, j in best.items():
+        if flip:
+            out[r_list[i]] = c_list[j]      # r_list is the cells
+        else:
+            out[c_list[j]] = r_list[i]
+    return out
+
+
+def _kahn_munkres(cost: list[list[float]]) -> dict[int, int]:
+    """{row: col} minimising the total cost, rows <= cols (the O(n^2 m) augmenting-path form)."""
+    n, m = len(cost), len(cost[0])
+    INF = float("inf")
+    u = [0.0] * (n + 1)
+    v = [0.0] * (m + 1)
+    p = [0] * (m + 1)
+    way = [0] * (m + 1)
+    for i in range(1, n + 1):
+        p[0] = i
+        j0 = 0
+        minv = [INF] * (m + 1)
+        used = [False] * (m + 1)
+        while p[j0]:                                   # while this column is taken
+            used[j0] = True
+            i0 = p[j0]
+            delta, j1 = INF, 0
+            for j in range(1, m + 1):
+                if used[j]:
+                    continue
+                cur = cost[i0 - 1][j - 1] - u[i0] - v[j]
+                if cur < minv[j]:
+                    minv[j] = cur
+                    way[j] = j0
+                if minv[j] < delta:
+                    delta, j1 = minv[j], j
+            for j in range(m + 1):
+                if used[j]:
+                    u[p[j]] += delta
+                    v[j] -= delta
+                else:
+                    minv[j] -= delta
+            j0 = j1
+        while j0:
+            j1 = way[j0]
+            p[j0] = p[j1]
+            j0 = j1
+    return {p[j] - 1: j - 1 for j in range(1, m + 1) if p[j]}
+
+
 def plan_and_margins(scores: dict[tuple[str, str], float],
                      cells) -> tuple[dict[str, str], dict[str, float], dict[str, float]]:
     """(plan, confidence, margin) from a score matrix.
 
-    Greedy on the strongest remaining pair: with the own cell winning 20 times out of 21 the ranking
-    is sharp, and greedy keeps the code readable.
+    `plan` is the optimal one-to-one assignment of pieces to cells under the picture scores.
 
-    `margin` is the gap between the winner and the runner-up for each cell.  A cell where two pieces
-    are close is the one that can be stolen -- the engine snaps on geometry, so the wrong one of the
-    two can lock into a same-shaped neighbour and never come out again -- which is why those cells are
-    filled last.
+    `margin` is the gap between the winner and the runner-up for each cell.  A cell where two
+    pieces are close is the one that can be stolen -- the engine snaps on geometry, so the wrong
+    one of the two can lock into a same-shaped neighbour and never come out again -- which is why
+    those cells are filled last.
     """
-    used_pieces: set[str] = set()
-    plan: dict[str, str] = {}
-    conf: dict[str, float] = {}
-    for (pk, ck), sc in sorted(scores.items(), key=lambda kv: -kv[1]):
-        if pk in used_pieces or ck in plan:
-            continue
-        plan[ck] = pk
-        conf[ck] = sc
-        used_pieces.add(pk)
+    pieces = sorted({pk for pk, _c in scores})
+    cell_keys = list(cells)
+    # Pieces with no score at all are left out rather than assigned on a fabricated zero: the
+    # matrix is only built from what was actually measured.
+    pieces = [pk for pk in pieces if any((pk, ck) in scores for ck in cell_keys)]
+    plan = _assign_max(pieces, cell_keys, scores)
+    conf = {ck: scores[(pk, ck)] for ck, pk in plan.items() if (pk, ck) in scores}
 
     margin: dict[str, float] = {}
-    for ck in cells:
+    for ck in cell_keys:
         ranked = sorted((sc for (pk, c2), sc in scores.items() if c2 == ck), reverse=True)
         margin[ck] = ranked[0] - ranked[1] if len(ranked) > 1 else 1.0
     return plan, conf, margin
