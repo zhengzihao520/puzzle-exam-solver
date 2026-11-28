@@ -835,14 +835,13 @@ def main() -> int:
                 it (the engine snaps on geometry, and once locked the piece cannot be lifted).  That
                 is an opening-game problem; in the endgame "looks most like" is not worth a deadlock.
                 """
-                if late or args.loose or cells[key] == BLANK:
-                    # A pure-white cell has no picture, so "this piece looks most like it" is not a
-                    # weaker reading, it is no reading at all: all five white pieces are the same
-                    # white tile.  Restricting them by their best cell -- which is filled, because
-                    # a white piece was already placed there -- left the last white cells with
-                    # nothing to try while their pieces sat in the tray.
+                if late or args.loose:
                     return True
                 return best_cell.get(pk, key) == key or plan.get(key) == pk
+            # Note: exempting pure-white cells from this rule was tried and measured worse -- 21 of
+            # 25 with 22 refusals against 24 of 25 with 17 -- because a white piece offered to every
+            # white cell is refused most of the time and each refusal costs two moves.  The white
+            # cells get their freedom from `late` and from the last-resort branch instead.
             # Candidates in order of how much each piece looks like *this* cell, with the
             # one-to-one plan's own choice moved to the front.  The plan is the *optimal*
             # assignment of pieces to cells (panel_match.plan_and_margins), and it differs from
@@ -886,15 +885,14 @@ def main() -> int:
                                 and tried.get((k, key), 0) < TRIES_ALLOWED),
                                key=lambda k: (tried.get((k, key), 0), -shape_fit(k))
                                )[:min(4, 2 + attempt)]
-            if not order:
-                # Last resort, and the branch is its own gate: it only runs when every earlier one
-                # came back empty, which in practice means the endgame -- a cell whose own piece the
-                # reader labelled as something else, or one whose piece was spent on another cell.
-                # It used to *also* require `late`, and that combination deadlocked: with five
-                # cells left and ten pieces in the tray, `late` was false, so the cell was declared
-                # untryable with its piece sitting in the tray (measured in three Part 3 games).
-                # While the tray still holds the right class this branch is never reached at all,
-                # so the two-move cost of a cross-class offer is only paid where it can pay off.
+            if not order and late:
+                # Last resort, kept to the endgame on purpose, and the measurement is the reason:
+                # letting it run whenever the earlier branches came back empty -- five cells open,
+                # ten pieces on the tray, `late` false -- made the runs *worse*, not better (17 of
+                # 25 with 41 refusals, against 24 of 25 with 17), because in that state there are
+                # still real pieces in the tray and every cross-class offer costs two moves.
+                # Second reason: for a cell whose own piece the reader labelled as something else,
+                # offer any untried piece whose shape does not rule the cell out.
                 # Last resort for a cell whose own piece the reader labelled as something else:
                 # offer *any* untried piece whose shape does not rule the cell out.  Bounded on
                 # purpose -- two per cell per pass -- and the refused pairs live on disk, so the
