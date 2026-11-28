@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from pathlib import Path
 from collections import Counter
 
 import cv2
@@ -493,6 +494,14 @@ def main() -> int:
     ap.add_argument("--loose", action="store_true",
                     help="offer pieces to any cell, not only the one they look most like: more "
                          "moves, but a cell whose piece was misread gets rescued earlier")
+    ap.add_argument("--white-frames", metavar="DIR", default=None,
+                    help="save the frame the loop is looking at each time it offers a piece to a "
+                         "pure-white cell: the engine's answer (which piece it accepts) then labels "
+                         "the frame, which is the only ground truth the interior sides have")
+    ap.add_argument("--credit-check", action="store_true",
+                    help="only credit a cell if the piece has visibly left its tray slot; off by "
+                         "default because the runs with it have had more refusals, and the reason "
+                         "has not been measured yet")
     ap.add_argument("--wait", type=float, default=0.0,
                     help="seconds to wait before the foreground check, so you can click the "
                          "browser after pressing Enter in a terminal")
@@ -502,6 +511,9 @@ def main() -> int:
               f"(it must be maximised and in the foreground)")
         time.sleep(args.wait)
     ok, why = check_foreground()
+    # One line, so a run's own log says whether the white-cell capture was armed: a flag that
+    # silently fails to arrive leaves no other trace, and one whole game was spent finding that out.
+    print(f"white frames: {args.white_frames or '-'}")
     print(f"foreground: {why}")
     if not ok:
         return 2
@@ -954,6 +966,18 @@ def main() -> int:
                 tries += 1
                 if moves >= args.max_moves:
                     break
+                if args.white_frames and cells[key] == BLANK:
+                    # The frame the decision was made on, named after the cell and the piece it is
+                    # about to offer.  The log line that follows says whether the engine accepted it,
+                    # so the pair (frame, accepted piece) is a labelled example -- the only way to
+                    # judge the shape descriptor on the interior sides, where board geometry is
+                    # silent.
+                    frame_dir = Path(args.white_frames)
+                    if not frame_dir.is_absolute():
+                        frame_dir = vision.ROOT / frame_dir
+                    frame_dir.mkdir(parents=True, exist_ok=True)
+                    cv2.imwrite(str(frame_dir / f"w_{key.replace(',', '_')}_{pk}_{moves:03d}.png"),
+                                snap.img)
                 box, sc = locate_piece(snap, pieces, pk)
                 if box is None:
                     # Do NOT retire the piece.  Not finding it is a failure of the search, or of
@@ -1001,13 +1025,15 @@ def main() -> int:
                     # still settling.  Ask again once it has calmed down and take the later answer.
                     time.sleep(0.45)
                     locked = press_is_locked(mouse, after.cells[key])
-                if locked and pieces.tpl[pk] is not None \
+                if args.credit_check and locked and pieces.tpl[pk] is not None \
                         and fp.score_at(after.img, pieces.tpl[pk], box) > fp.GOOD:
-                    # The piece is still in the slot it was picked up from, so the cell did not
-                    # take it, whatever the press says.  Crediting a cell without a piece is worse
-                    # than leaving it empty: the piece is marked used and is never offered to its
-                    # own cell again.  Recorded Part 3 games ended 24 of 25 with the right piece
-                    # still in the tray and its cell empty, which is exactly this mistake.
+                    # The piece is still in the slot it was picked up from, so the cell cannot hold
+                    # it, whatever the press says -- crediting a cell without a piece marks that
+                    # piece used and it is never offered to its own cell again.
+                    #
+                    # Off by default and not yet trusted: the build that measured 25/25 in 33 moves
+                    # did not have it, and the runs since have had 12-24 refusals against that run's
+                    # 4.  It has to be measured against those numbers before it becomes the default.
                     locked = False
                 if locked:
                     confirmed[key] = pk

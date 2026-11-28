@@ -34,3 +34,6 @@ runs/cls_real/weights/best.pt
 
 # IDE
 .idea/
+
+# white-cell capture frames (debug flag --white-frames)
+runs/white/
