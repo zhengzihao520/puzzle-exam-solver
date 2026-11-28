@@ -480,8 +480,14 @@ def main() -> int:
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--go", action="store_true")
     ap.add_argument("--edges", action="store_true", help="also read each piece's cut (one move per piece)")
-    ap.add_argument("--max-moves", type=int, default=120)
-    ap.add_argument("--passes", type=int, default=6,
+    ap.add_argument("--max-moves", type=int, default=170)
+    # Ten passes, not six, and the number comes from the one part that needs them: a Part 3 board
+    # has five pure-white cells whose five pieces are indistinguishable by picture, so they can only
+    # be settled by offering one piece to one cell and reading the engine's answer.  One attempt
+    # per cell per pass means six passes cap that search at six pieces per cell, and three measured
+    # games ended on four or five cells with the pieces still in the tray.  Ten passes covers five
+    # white pieces twice over; a photo-only board never gets that far because it fills in one pass.
+    ap.add_argument("--passes", type=int, default=10,
                     help="how many times to walk the ring; a later pass may only offer pieces "
                          "and cells not already tried together, so it cannot spin forever")
     ap.add_argument("--loose", action="store_true",
