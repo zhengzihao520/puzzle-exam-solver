@@ -931,11 +931,19 @@ def main() -> int:
                 """
                 if late or args.loose:
                     return True
+                # A piece whose *class* is what this cell needs is always fair game.  The class is a
+                # strong reading and the picture rank only orders the copies of it; blocking them was
+                # a deadlock: on a board that ended 20 of 25, cell (4,1) wanted a dog, the plan's dog
+                # s09 had been refused three times, and s31 -- also read as a dog, with the best
+                # picture score of the three (0.62) -- was never offered once, because its own best
+                # cell was already filled.  Three attempts at the wrong copy, and the right one was
+                # walled off.
+                if wanted in (pieces.allow.get(pk) or set()):
+                    return True
                 return best_cell.get(pk, key) == key or plan.get(key) == pk
-            # Note: exempting pure-white cells from this rule was tried and measured worse -- 21 of
-            # 25 with 22 refusals against 24 of 25 with 17 -- because a white piece offered to every
-            # white cell is refused most of the time and each refusal costs two moves.  The white
-            # cells get their freedom from `late` and from the last-resort branch instead.
+            # Note: exempting pure-white *cells* from this rule was tried and measured worse -- 21 of
+            # 25 with 22 refusals against 24 of 25 with 17 -- so that stays as it was; white cells
+            # get their freedom from `late` and from the shape reader instead.
             # Candidates in order of how much each piece looks like *this* cell, with the
             # one-to-one plan's own choice moved to the front.  The plan is the *optimal*
             # assignment of pieces to cells (panel_match.plan_and_margins), and it differs from
