@@ -1,4 +1,4 @@
-"""Fine-tune YOLO11s on the 15-class puzzle catalog.
+﻿"""Fine-tune YOLO11s on the 15-class puzzle catalog.
 
 Why yolo11s-cls: the solver needs "which class is this crop", so a classifier head
 is the right tool; the site's reference grid shows a different photo of the same
@@ -7,7 +7,7 @@ class, which rules out pixel matching entirely.
 Two runs are kept so the report can compare them:
   1. yolo11s-cls.pt warm start  (pretrained ImageNet weights)  -> runs/cls
   2. from scratch (no pretrained)                             -> runs/cls_scratch
-The pretrained run is what solve.py loads by default; the scratch run documents why
+The pretrained run is what runs/cls holds and what the solver loads; the scratch run documents why
 pretraining matters for the three classes that are not in ImageNet-1k either.
 
 CPU-friendly settings: imgsz 224, batch 16, cosine LR, mild augmentation

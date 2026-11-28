@@ -7,10 +7,13 @@ dataset/cls/
 dataset/det/
 dataset/labelImg/
 
-# 运行时产物
-logs/
+# 运行时产物。用 `logs/*` 而不是 `logs/`：目录被排除后，里面的白名单会失效（git 的规则）
+logs/*
+# ... 但 README 引用的那份实测日志要能直接看到（25 步 0 拒绝那一局）
+!logs/part3_25moves_25of25.log
 shots/
-# 录像默认不入库（`.mp4` 体积大）；只放行完整通关那一条，交付时要能直接看见证据
+
+# 录像默认不入库（`.mp4` 体积大）；只放行完整通关的那几条，交付时要能直接看见证据
 *.mp4
 !demo/part3_perfect_25of25.mp4
 !demo/part3_perfect_25of25_b.mp4
@@ -18,25 +21,21 @@ shots/
 !demo/part3_flat_order_25of25.mp4
 !demo/part1_perfect_25of25.mp4
 !demo/part3_perfect_25of25_c.mp4
+
 __pycache__/
 *.pyc
 
-# 训练中间产物（runs/ 里的 weights 与曲线要保留，这里只忽略缓存）
+# 训练中间产物（runs/ 里的 weights 与曲线要保留，这里只忽略缓存与 last.pt）
 runs/**/*.cache
-
-# 图库原图（raw_assets/，748 张）按考核要求入库，不忽略
-
 runs/**/weights/last.pt
 
-# 失败实验的权重（各 52 MB，超过 GitHub 推荐上限）；结论已写进 README，文件本身不入库
-runs/cls_crops/weights/best.pt
-runs/cls_real/weights/best.pt
-
-# IDE
-.idea/
+# 图库原图（raw_assets/，750 张）按考核要求入库，不忽略
 
 # white-cell capture frames (debug flag --white-frames)
 runs/white/
 
-# ����/ע�͸���������ѧϰ�ã�����⣩
+# 讲解/注释副本（本地学习用，不入库）
 docs/study/
+
+# IDE
+.idea/

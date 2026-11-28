@@ -571,6 +571,7 @@ def main() -> int:
     ok, why = check_foreground()
     # One line, so a run's own log says whether the white-cell capture was armed: a flag that
     # silently fails to arrive leaves no other trace, and one whole game was spent finding that out.
+    SHOTS.mkdir(parents=True, exist_ok=True)     # the debug screenshots write themselves here
     print(f"white frames: {args.white_frames or '-'}")
     print(f"foreground: {why}")
     if not ok:

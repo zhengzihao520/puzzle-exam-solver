@@ -124,9 +124,9 @@ canvas  = (pieceW + 2*margin) x (pieceH + 2*margin)   # 161 x 139
 
 ## 4. 执行层
 
-主执行器 `place.py`。两条实测出来的数学事实：
+主执行器 `stateless.py`。两条实测出来的数学事实：
 
-- **指针 → 块的位移是 1:1**（`probe_map.py`：指针移 (+100,0) 块移 (+101,0)；移 (0,+100) 块移 (0,+100)）。
+- **指针 → 块的位移是 1:1**（实测：指针移 (+100,0) 块移 (+101,0)；移 (0,+100) 块移 (0,+100)）。
   所以只要**抓在块矩形中心**，块中心就会落在指针所指的点上。
 - **吸附半径 = pieceWidth×0.14 = 15.7px**。抓槽位中心、瞄格矩形中心，实测残差 0–6px，
   是阈值的 1/3，一次到位。
@@ -196,41 +196,42 @@ canvas  = (pieceW + 2*margin) x (pieceH + 2*margin)   # 161 x 139
 ## 7. 目录与脚本
 
 ```
-recon/            站点源码存档（研究用）
-tools/            数据集下载、数据集构建、训练脚本
-dataset/          15 类图库（388 站点同源 + 360 网络补充）
-runs/             YOLO 训练痕迹（cls / cls_crops12 / cls_real / cls_photoonly）
-docs/             引擎规则、算法、开局布局说明
-vision.py         几何标定、托盘/棋盘检测、分类器、白块/空格判据
-catalog.py        与站点 748 张图库做 NCC 匹配（match / match_aligned）
-identify.py       类别识别融合：图库匹配 + YOLO，两者一致即"确定"（60 块基准：确定 50/60，且 50/50 全对）
-plan_board.py     只读：读全盘（25 格 + 30 块），打印类别配额与候选分配
-place.py          按类别配额落位 + 锁定探测验收 + 外圈→内圈 + 兜底扫描（无形状信息时的执行器）
-solve_run.py      完整链路：读 25 格类别 + 30 块类别与四边（每块 1 步）→ jigsaw 求解 → 落位验收
-jigsaw.py         类别 + 四边约束的分配求解（solve 精确 / solve_soft 最小违反量）
-probe_edges.py    四边读数（悬停隔离 + 中段/两端覆盖率，实测合成 1200/1200）
-audit_board.py    五点探测，区分"已锁定"与"躺着没吸附"
-sweep_loose.py    全页面扫描散块并收回托盘
-vision.calibrate_tray   按"能装下全部块的最小行数"自动校准托盘栅格（这台机器是 6 行）
-probe_drag.py     机制探针：抓取是否命中 / 落点残差 / 是否吸附
-probe_map.py      指针→块位移比例（实测 1:1）
-probe_locked.py   单格判定：这块是已吸附还是躺在上面
-piececutter.py    引擎切块数学的 Python 移植：81 种轮廓模板 + IoU 拟合
-solve_live.py     拖拽原语（Mouse、抓取、锁定探测）
-run.py / solve2.py / solve3.py / solve4.py / solve5.py / deduce.py   前几轮迭代（保留作失败记录）
-batch.py          真实块小批量标注工具（每轮 3 块自动切片+编号+存盘）
-real_pieces/      30 块人工标注的真实块（第一局）
-real_pieces_fix/  30 块人工标注的真实块（Part 3 混合局，含白块）
+stateless.py      主程序（唯一入口）：读盘 → 计划 → 一动 → 再截图 → 验收
+vision.py         几何标定、托盘/棋盘/面板、空格/有块/纯白三个判据
+identify.py       类别识别：YOLO11s-cls（15 类）+ 自训分类器投票，拿不准留两个候选
+panel_match.py    对着参考面板做图像匹配 + 最优一对一指派（Kahn-Munkres）
+white_edges.py    白块/孔的四边剖面（Part 3 的白格靠它一步定位）
+fingerprint.py    48×36 块指纹：这块现在在哪、有没有被拿回去
+solve_live.py     真实鼠标事件（Mouse）、DPI、前台检查
+jigsaw.py         类别 + 四边约束的规则求解（图片计划的兜底）
+assemble.py       缝代价 + 切边约束的装配器，自带合成自检（--selftest）
+probe_edges.py    切边读数（举起读，--edges 才用）
+catalog.py        与站点图库做 NCC 匹配（类别识别的另一票）
+piececutter.py    引擎切块数学的 Python 移植（81 种轮廓模板）
+test_edges.py     切边读数的合成自检（1200/1200）
+test_jigsaw.py    规则求解器的合成自检
+
+tools/            数据与模型：fetch_catalog → build_dataset → train_yolo
+                  验收工具：tune_panel（匹配器）/ assign_test（指派）/ hole_test（白格几何）/ tune_white（白格真值）
+dataset/          15 类图库（388 站点同源 + 360 网络补充）+ 真实块裁片
+raw_assets/       站点同源图库（750 张）
+real_pieces/      30 块人工标注的真实块（含标签 real_pieces_labels.json）
+runs/cls/         训练好的 YOLO11s-cls（weights/best.pt，15 类，val top1 0.96）
+demo/             通关录像与结算截图（证据）
+logs/             各次实测日志（README 里引用的那些）
+recon/            站点源码存档（研究用，不参与运行）
+docs/             引擎规则、算法、边界说明、讲解提纲
 ```
 
 常用命令：
 
 ```powershell
-python place.py --cleanup-only         # 把盘中散块收回托盘
-python plan_board.py                   # 只读识别全盘，出候选表（约 2–3 分钟）
-python place.py --dry                  # 打印计划，一步不动
-python place.py --go --max-moves 40    # 真跑，最多 40 步
-python probe_locked.py 0,4             # 单独查某格是否已吸附
+D:\python\python.exe stateless.py --dry --wait-deal 600       # 只读：打印计划，一步不动
+D:\python\python.exe stateless.py --go  --wait-deal 900       # 真跑（开局自己点）
+D:\python\python.exe assemble.py --selftest 6                 # 装配器合成自检
+D:\python\python.exe test_edges.py --trials 300               # 切边读数自检
+D:\python\python.exe tools\assign_test.py                     # 指派算法对暴力枚举
+D:\python\python.exe tools\hole_test.py <帧目录>              # 白格几何验收
 ```
 
 ---
