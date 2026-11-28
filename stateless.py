@@ -1049,13 +1049,18 @@ def main() -> int:
                 spare.sort(key=lambda k: (tried.get((k, key), 0), -shape_fit(k)))
                 order += spare[:max(0, 4 - len(order))]
             if white_lead:
-                # The shape's answer, applied last so it wins whenever it has one: one offer per
-                # pass, best first, and a refusal simply moves to the next shape (the tried count
-                # retires it for this cell).
+                # The shape's answer, applied last so it wins whenever it has one, and **one refusal
+                # retires a shape for that cell**.  Without that, the ranking is a fixed function of
+                # the picture and the same piece came back first on every pass: measured on a live
+                # Part 3 game, s12 was offered to cell(1,2) three times (moves 24, 31, 37) and s16 to
+                # cell(1,3) three times (26, 33, 39) -- ten white-cell refusals, twenty of that game's
+                # forty-seven moves.  The reader being wrong once is expected; paying for it three
+                # times is not.
                 shaped = [k for k in white_lead
                           if k not in pieces.used and tried.get((k, key), 0) < TRIES_ALLOWED]
-                if shaped:
-                    order = shaped[:1]
+                fresh = [k for k in shaped if tried.get((k, key), 0) == 0]
+                if fresh or shaped:
+                    order = (fresh or shaped)[:1]
             if not order:
                 print(f"    cell({key}) {wanted}: nothing left to try -- cell left empty")
                 continue
