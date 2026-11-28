@@ -111,7 +111,7 @@ def read_white_edges(img: np.ndarray, box) -> dict:
     return _sides_of(m)
 
 
-def read_hole_edges(img: np.ndarray, cell_box, pad: int = 24) -> dict:
+def read_hole_edges(img: np.ndarray, cell_box, pad: int = 24, mode: str = "band") -> dict:
     """The shape an *empty* cell needs, read from the hole itself.
 
     The hole is the one region of the board that is not a piece, and its own darkness separates it
@@ -124,26 +124,14 @@ def read_hole_edges(img: np.ndarray, cell_box, pad: int = 24) -> dict:
     flat there in 4 of 4 such sides over twelve frames of a recorded Part 3 game
     (`tools/hole_test.py`).
     """
-    x, y, w, h = cell_box
-    crop = vision.sub(img, (x - pad, y - pad, w + 2 * pad, h + 2 * pad))
-    if crop.size == 0 or crop.shape[0] < 20 or crop.shape[1] < 20:
+    m = read_hole_mask(img, cell_box, pad, mode)
+    if m.shape[0] < 20:
         return {s: None for s in SIDES}
-    g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    # The white stroke the page draws round the hole is not part of the shape, so it is dropped by
-    # the same threshold: it is bright, the hole is dark.
-    m = (g < HOLE_DARK).astype(np.uint8)
-    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    n, lab, stats, _ = cv2.connectedComponentsWithStats(m, 8)
-    cy, cx = pad + h // 2, pad + w // 2       # the cell's centre, in crop coordinates
-    if cy >= m.shape[0] or cx >= m.shape[1]:
-        return {s: None for s in SIDES}
-    keep = int(lab[cy, cx])
-    if keep == 0:
-        return {s: None for s in SIDES}
-    return _sides_of((lab == keep).astype(np.uint8))
+    return _sides_of(m)
 
 
-def profiles_of(img: np.ndarray, box, hole: bool = False, pad: int = 24) -> dict:
+def profiles_of(img: np.ndarray, box, hole: bool = False, pad: int = 24,
+                mode: str = "band") -> dict:
     """{'side': (outward_px, inward_px)} -- the continuous reading behind the three labels.
 
     Three labels (tab / notch / flat) throw away most of what the silhouette says, and one wrong
@@ -155,7 +143,7 @@ def profiles_of(img: np.ndarray, box, hole: bool = False, pad: int = 24) -> dict
     if crop.size == 0 or crop.shape[0] < 20 or crop.shape[1] < 20:
         return {}
     if hole:
-        m = read_hole_mask(img, box, pad)
+        m = read_hole_mask(img, box, pad, mode)
     else:
         m = white_mask(img, box)
     if m.shape[0] < 20:
@@ -186,10 +174,19 @@ def profiles_of(img: np.ndarray, box, hole: bool = False, pad: int = 24) -> dict
     return out
 
 
-def read_hole_mask(img: np.ndarray, cell_box, pad: int = 24) -> np.ndarray:
-    """The dark blob of an empty cell (its own shape), or an empty mask."""
+def read_hole_mask(img: np.ndarray, cell_box, pad: int = 24, mode: str = "band") -> np.ndarray:
+    """The blob of an empty cell (its own shape), or an empty mask.
+
+    `mode` picks how the hole is separated from its surroundings: "band" uses the hole's own grey
+    (22-24, against shadow at 7-8 and the page's outline at 237-253), "wall" uses that outline as a
+    fence, and "drop" is the original "darker than 60", which also swallowed the shadow.
+    """
     x, y, w, h = cell_box
     crop = vision.sub(img, (x - pad, y - pad, w + 2 * pad, h + 2 * pad))
+    if mode == "band":
+        return read_hole_mask_band(img, cell_box, pad)
+    if mode == "wall":
+        return read_hole_mask_wall(img, cell_box, pad)
     if crop.size == 0 or crop.shape[0] < 20 or crop.shape[1] < 20:
         return np.zeros((1, 1), np.uint8)
     g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
@@ -203,3 +200,82 @@ def read_hole_mask(img: np.ndarray, cell_box, pad: int = 24) -> np.ndarray:
     if keep == 0:
         return np.zeros((1, 1), np.uint8)
     return (lab == keep).astype(np.uint8)
+
+
+def read_hole_mask_band(img: np.ndarray, cell_box, pad: int = 24) -> np.ndarray:
+    """The hole isolated by its *own* grey, not by "darker than everything else".
+
+    Measured on three holes of a recorded Part 3 board: the hole is grey 23 (22 and 24 round it),
+    a neighbouring piece's drop shadow is 7-8, and the page's white outline is 237-253.  A narrow
+    band around the cell centre's own value therefore separates the hole exactly, and the shadow
+    that a wide `g < 60` mask swallows cannot leak in.  Self-calibrating: the band is built from
+    the centre pixel, so it does not depend on the tray's absolute brightness.
+    """
+    x, y, w, h = cell_box
+    crop = vision.sub(img, (x - pad, y - pad, w + 2 * pad, h + 2 * pad))
+    if crop.size == 0 or crop.shape[0] < 20 or crop.shape[1] < 20:
+        return np.zeros((1, 1), np.uint8)
+    g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    cy, cx = pad + h // 2, pad + w // 2
+    if cy >= g.shape[0] or cx >= g.shape[1]:
+        return np.zeros((1, 1), np.uint8)
+    c = float(g[cy, cx])
+    m = ((g >= c - 5) & (g <= c + 7)).astype(np.uint8)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(m, 8)
+    if n <= 1 or int(lab[cy, cx]) == 0:
+        return np.zeros((1, 1), np.uint8)
+    return (lab == int(lab[cy, cx])).astype(np.uint8)
+
+
+def read_hole_mask_wall(img: np.ndarray, cell_box, pad: int = 24) -> np.ndarray:
+    """The hole, kept in by the page's white outline used as a wall.
+
+    The outline is drawn along the hole's own cut, so it encloses it; dilating a little closes the
+    gaps a 2-3 px stroke leaves, and the dark region inside cannot then join the shadow of the piece
+    next door.  A second route to what `read_hole_mask_band` does -- whichever agrees with the
+    board's forced flat sides on more frames is the one to keep.
+    """
+    x, y, w, h = cell_box
+    crop = vision.sub(img, (x - pad, y - pad, w + 2 * pad, h + 2 * pad))
+    if crop.size == 0 or crop.shape[0] < 20 or crop.shape[1] < 20:
+        return np.zeros((1, 1), np.uint8)
+    g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    wall = cv2.dilate((g > 190).astype(np.uint8), np.ones((5, 5), np.uint8))
+    m = ((g < HOLE_DARK) & (wall == 0)).astype(np.uint8)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(m, 8)
+    cy, cx = pad + h // 2, pad + w // 2
+    if n <= 1 or cy >= m.shape[0] or cx >= m.shape[1]:
+        return np.zeros((1, 1), np.uint8)
+    keep = int(lab[cy, cx])
+    if keep == 0:
+        return np.zeros((1, 1), np.uint8)
+    return (lab == keep).astype(np.uint8)
+
+
+def _profiles_of_mask(m: np.ndarray) -> dict:
+    """{side: (outward_px, inward_px)} from an already-isolated silhouette."""
+    if int(m.sum()) < 200:
+        return {}
+    ys, xs = np.nonzero(m)
+    m = m[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    h, w = m.shape
+    out: dict[str, tuple[float, float]] = {}
+    for side in SIDES:
+        if side == "top":
+            prof = np.argmax(m, axis=0).astype(np.float32)
+        elif side == "bottom":
+            prof = (h - 1 - np.argmax(m[::-1], axis=0)).astype(np.float32)
+        elif side == "left":
+            prof = np.argmax(m, axis=1).astype(np.float32)
+        else:
+            prof = (w - 1 - np.argmax(m[:, ::-1], axis=1)).astype(np.float32)
+        n = len(prof)
+        mid = prof[n // 3: 2 * n // 3]
+        core = float(np.median(prof))
+        if side in ("top", "left"):
+            outward, inward = core - float(mid.min()), float(mid.max()) - core
+        else:
+            outward, inward = float(mid.max()) - core, core - float(mid.min())
+        out[side] = (outward, inward)
+    return out
