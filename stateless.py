@@ -816,24 +816,33 @@ def main() -> int:
                     score += 1 if on_edge else -1
                 return score
 
-            late = len(open_cells) - len(confirmed) <= 3
+            # How much freedom this cell has, decided by the tray rather than by a fixed count.
+            # `owns` and the refusal cap exist for the opening: 30 pieces are dealt for 25 cells, so
+            # five have no cell at all, and a decoy offered everywhere costs two moves a time.  They
+            # are the wrong constraints at the end: with five cells left and ten pieces in the tray
+            # every piece has to go somewhere, and the recorded Part 3 games that stopped at 20 and
+            # 23 of 25 both printed "nothing left to try" on every remaining cell while five unused
+            # pieces sat in the tray.  So freedom returns once the tray holds no more pieces than
+            # there are cells -- and, as before, in the last three cells.
+            spare_n = len(pieces.spare())
+            open_left = len(open_cells) - len(confirmed)
+            late = open_left <= 3 or spare_n <= open_left
 
             def owns(pk: str) -> bool:
-                """Does this piece look most like *this* cell?
+                """May this piece be offered to *this* cell?
 
-                Two reasons, and the second one was a discovery: a piece dragged into a cell it does
-                not own is how a same-shaped cell steals it (the engine snaps on geometry, and once
-                locked the piece cannot be lifted).  And the exam deals more pieces than cells -- 30
-                for 25 -- so five of them have no cell at all.  Such a decoy's best cell is some real
-                cell, and once that cell is filled the decoy has nothing left to lose: it would be
-                offered everywhere and refused everywhere, two moves each time.  That is where the
-                remaining refusals in photo mode came from.  So the "its own cell is taken" escape is
-                gone: a decoy waits for the endgame like any other piece with no place to go.
+                A piece dragged into a cell it does not look like is how a same-shaped cell steals
+                it (the engine snaps on geometry, and once locked the piece cannot be lifted).  That
+                is an opening-game problem; in the endgame "looks most like" is not worth a deadlock.
                 """
-                if late or args.loose:
+                if late or args.loose or cells[key] == BLANK:
+                    # A pure-white cell has no picture, so "this piece looks most like it" is not a
+                    # weaker reading, it is no reading at all: all five white pieces are the same
+                    # white tile.  Restricting them by their best cell -- which is filled, because
+                    # a white piece was already placed there -- left the last white cells with
+                    # nothing to try while their pieces sat in the tray.
                     return True
                 return best_cell.get(pk, key) == key or plan.get(key) == pk
-
             # Candidates in order of how much each piece looks like *this* cell, with the
             # one-to-one plan's own choice moved to the front.  The plan is the *optimal*
             # assignment of pieces to cells (panel_match.plan_and_margins), and it differs from
@@ -877,14 +886,15 @@ def main() -> int:
                                 and tried.get((k, key), 0) < TRIES_ALLOWED),
                                key=lambda k: (tried.get((k, key), 0), -shape_fit(k))
                                )[:min(4, 2 + attempt)]
-            if not order and late:
-                # Last resort, and *only* in the endgame: for a cell whose own piece the reader
-                # labelled as something else, offer any untried piece whose shape does not rule the
-                # cell out.  Measured on a live Part 3 board, 17 of 23 refusals were cross-class
-                # offers of exactly this kind (elephant into a chair cell, suitcase into a tafei cell)
-                # -- pure waste while the tray still holds the right class, because those pieces
-                # cannot fit.  Deferring them to the endgame keeps the rescue for the cells that
-                # really were misread, and stops paying two moves for it on every pass.
+            if not order:
+                # Last resort, and the branch is its own gate: it only runs when every earlier one
+                # came back empty, which in practice means the endgame -- a cell whose own piece the
+                # reader labelled as something else, or one whose piece was spent on another cell.
+                # It used to *also* require `late`, and that combination deadlocked: with five
+                # cells left and ten pieces in the tray, `late` was false, so the cell was declared
+                # untryable with its piece sitting in the tray (measured in three Part 3 games).
+                # While the tray still holds the right class this branch is never reached at all,
+                # so the two-move cost of a cross-class offer is only paid where it can pay off.
                 # Last resort for a cell whose own piece the reader labelled as something else:
                 # offer *any* untried piece whose shape does not rule the cell out.  Bounded on
                 # purpose -- two per cell per pass -- and the refused pairs live on disk, so the
@@ -905,7 +915,7 @@ def main() -> int:
                 # left to try" on a cell with pieces still in the tray, which is how two recorded
                 # Part 3 runs ended at 20 of 25 and 23 of 25.  Ordering by how often each piece
                 # has already been refused here keeps the least-repeated bet first.
-                late = len(open_cells) - len(confirmed) <= 3
+                # `late` is already decided for this cell (last three cells, or a nearly empty tray)
                 # A pure-white piece is only ever offered to a pure-white cell while the tray is
                 # full.  The engine snaps on geometry, not identity, so a white piece put on a
                 # photo cell can lock there and starve a white cell: that is exactly how one run
@@ -927,7 +937,7 @@ def main() -> int:
             # one the reader labelled as another class, and while the same-class pool still has
             # entries the last-resort branch above never runs -- which is how runs kept ending on
             # 24 of 25 with two or three pieces in the tray that were never offered to that cell.
-            if len(open_cells) - len(confirmed) <= 3:
+            if late:
                 spare = [k for k in pieces.spare()
                          if k not in order and white_ok(k)]
                 spare.sort(key=lambda k: (tried.get((k, key), 0), -shape_fit(k)))
@@ -987,6 +997,14 @@ def main() -> int:
                     # still settling.  Ask again once it has calmed down and take the later answer.
                     time.sleep(0.45)
                     locked = press_is_locked(mouse, after.cells[key])
+                if locked and pieces.tpl[pk] is not None \
+                        and fp.score_at(after.img, pieces.tpl[pk], box) > fp.GOOD:
+                    # The piece is still in the slot it was picked up from, so the cell did not
+                    # take it, whatever the press says.  Crediting a cell without a piece is worse
+                    # than leaving it empty: the piece is marked used and is never offered to its
+                    # own cell again.  Recorded Part 3 games ended 24 of 25 with the right piece
+                    # still in the tray and its cell empty, which is exactly this mistake.
+                    locked = False
                 if locked:
                     confirmed[key] = pk
                     pieces.used.add(pk)
